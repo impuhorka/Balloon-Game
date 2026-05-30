@@ -1,0 +1,24 @@
+{
+	"name": "BrainrotGame",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedFirst": {
+			"$path": "src/ReplicatedFirst",
+			"$ignoreUnknownInstances": true
+		},
+		"ReplicatedStorage": {
+			"$path": "src/ReplicatedStorage",
+			"$ignoreUnknownInstances": true
+		},
+		"ServerScriptService": {
+			"$path": "src/ServerScriptService",
+			"$ignoreUnknownInstances": true
+		},
+		"StarterPlayer": {
+			"StarterPlayerScripts": {
+				"$path": "src/StarterPlayer/StarterPlayerScripts",
+				"$ignoreUnknownInstances": true
+			}
+		}
+	}
+}
