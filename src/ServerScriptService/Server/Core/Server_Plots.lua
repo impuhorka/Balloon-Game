@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 
+local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local Shared_Marketplace = require(ReplicatedStorage.Modules.Settings.Shared_Marketplace)
 
 -- Services (Dependency Injection)
@@ -175,6 +176,8 @@ end
 function Module:SetupPlayerHandlers()
 	-- Player joins
 	local function onPlayerAdded(player: Player)
+		player:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, false)
+
 		-- PROPER WAIT: Poll for profile to be loaded
 		local profile = nil
 		local maxWait = 10
@@ -217,10 +220,11 @@ function Module:SetupPlayerHandlers()
 			end)
 		end
 		
-		-- Respawn on death
 		player.CharacterAdded:Connect(function()
-			task.wait(0.1)
-			PlotService:RespawnPlayerAtPlot(player, plotID)
+			player:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, false)
+			task.defer(function()
+				PlotService:RespawnPlayerAtPlot(player, plotID)
+			end)
 		end)
 	end
 	

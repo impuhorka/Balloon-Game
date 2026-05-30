@@ -10,6 +10,11 @@ return {
 			Duration = 0.65,
 			FillTransparencyStart = 0.25,
 		},
+		Damage = {
+			Color = Color3.fromRGB(255, 55, 55),
+			Duration = 1,
+			FillTransparencyStart = 0.1,
+		},
 	},
 
 	LuckyBlockOpening = {

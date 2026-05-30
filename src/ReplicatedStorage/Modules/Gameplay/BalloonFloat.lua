@@ -104,6 +104,9 @@ function BalloonFloat.isFloatBlocked(character: Model?): boolean
 	if not character then
 		return true
 	end
+	if not BalloonRigKit.isPlotSpawnReady(nil, character) then
+		return true
+	end
 	if BalloonFloat.isRigSettling(character) then
 		return true
 	end
@@ -481,7 +484,7 @@ function BalloonFloat.bleedReleaseUpwardVelocity(root: BasePart?, liftBlend: num
 	root.AssemblyLinearVelocity = Vector3.new(vel.X, newVy, vel.Z)
 end
 
-function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend: number, opts: { fallCatch: boolean?, wantHold: boolean? }?): number
+function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend: number, opts: { fallCatch: boolean?, wantHold: boolean?, liftMult: number? }?): number
 	if not character or liftBlend <= 0.01 then
 		return 0
 	end
@@ -492,17 +495,18 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 	end
 
 	local strength = math.clamp(liftBlend, 0, 1)
+	local liftMult = math.max(0, opts and opts.liftMult or 1)
 	local weight = mass * Workspace.Gravity
 	local fallCatch = opts and opts.fallCatch == true
 	local wantHold = opts == nil or opts.wantHold ~= false
 
 	if not wantHold then
 		local ratio = Config.number("BalloonFloatReleaseHoverWeightRatio", 0.88)
-		return weight * ratio * strength
+		return weight * ratio * strength * liftMult
 	end
 
 	if not Config.flag("BalloonFloatVelocityStabilizeEnabled") then
-		local force = weight * BalloonFloat.getHoldLiftWeightRatio() * strength
+		local force = weight * BalloonFloat.getHoldLiftWeightRatio() * strength * liftMult
 		if fallCatch then
 			force *= Config.number("BalloonFloatFallCatchForceBoost", 1.42)
 		end
@@ -515,12 +519,12 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 		vy = hrp.AssemblyLinearVelocity.Y
 	end
 
-	local targetVy = Config.number("BalloonFloatTargetRiseSpeed", 30)
+	local targetVy = Config.number("BalloonFloatTargetRiseSpeed", 30) * liftMult
 	local response = Config.number("BalloonFloatRiseResponse", 11)
-	local maxAccel = Config.number("BalloonFloatMaxRiseAccel", 48)
-	local overspeedBuffer = if fallCatch
+	local maxAccel = Config.number("BalloonFloatMaxRiseAccel", 48) * liftMult
+	local overspeedBuffer = (if fallCatch
 		then Config.number("BalloonFloatRecoveryOverspeedBuffer", 16)
-		else Config.number("BalloonFloatOverspeedBuffer", 8)
+		else Config.number("BalloonFloatOverspeedBuffer", 8)) * math.sqrt(liftMult)
 	local minRatio = Config.number("BalloonFloatMinHoldLiftWeightRatio", 1.18)
 	local hoverRatio = Config.number("BalloonFloatHoverLiftWeightRatio", 1.24)
 		+ Config.number("BalloonFloatRigDragWeightRatio", 0.06)
@@ -530,21 +534,21 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 		response *= Config.number("BalloonFloatGlideResponseScale", 0.55)
 	end
 
-	local baseForce = weight * hoverRatio
+	local baseForce = weight * hoverRatio * liftMult
 	local accelCmd = math.clamp(response * vyError, -maxAccel, maxAccel)
 	local force = (baseForce + mass * accelCmd) * strength
 
 	if fallCatch and vy < 0 then
 		local fallCatchVy = Config.number("BalloonFloatFallCatchVy", -5)
 		local fallMult = math.clamp(-vy / math.max(1, math.abs(fallCatchVy)), 1, 2.8)
-		local extraAccel = Config.number("BalloonFloatFallCatchExtraAccel", 48)
+		local extraAccel = Config.number("BalloonFloatFallCatchExtraAccel", 48) * liftMult
 		force += mass * extraAccel * fallMult * strength
 		force *= Config.number("BalloonFloatFallCatchForceBoost", 1.42)
 	end
 
 	local minStrength = Config.number("BalloonFloatHoldLiftMinStrength", 0.9)
 	if vy < targetVy and wantHold then
-		force = math.max(force, weight * minRatio * math.max(strength, minStrength))
+		force = math.max(force, weight * minRatio * math.max(strength, minStrength) * liftMult)
 	elseif vy > targetVy + overspeedBuffer then
 		local recoveryCeiling = targetVy + Config.number("BalloonFloatRecoveryOverspeedBuffer", 16)
 		if not fallCatch or vy > recoveryCeiling then
@@ -555,7 +559,11 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 	return force
 end
 
-function BalloonFloat.getFloatMaxRiseSpeed(liftBlend: number): number
+function BalloonFloat.getFloatMaxRiseSpeed(liftBlend: number, liftMult: number?): number
+	liftMult = if liftMult ~= nil then math.max(0, liftMult) else 1
+	if liftMult <= 0 then
+		return 0
+	end
 	liftBlend = math.clamp(liftBlend, 0, 1)
 	if liftBlend <= 0.01 then
 		return 0
@@ -563,11 +571,11 @@ function BalloonFloat.getFloatMaxRiseSpeed(liftBlend: number): number
 
 	local cap = Config.number("BalloonFloatMaxRiseSpeed", 0)
 	if cap <= 0 then
-		cap = Config.number("BalloonFloatTargetRiseSpeed", 6)
+		cap = Config.number("BalloonFloatTargetRiseSpeed", 30)
 	end
 	local floorMult = Config.number("BalloonFloatMinRiseSpeedMult", 0.55)
 	local speedMult = floorMult + (1 - floorMult) * liftBlend
-	return cap * speedMult
+	return cap * speedMult * liftMult
 end
 
 function BalloonFloat.enforceFloatRiseSpeedCap(root: BasePart?, liftBlend: number)
@@ -1164,11 +1172,7 @@ function BalloonFloat.applyFloatBlendToFolder(
 	liftBlend: number,
 	balloonCount: number,
 	character: Model?,
-	opts: {
-		wantHold: boolean?,
-		onGround: boolean?,
-		fallCatch: boolean?,
-	}?
+	opts: { wantHold: boolean?, onGround: boolean?, fallCatch: boolean?, liftMult: number? }?
 ): number
 	if not balloonsFolder then
 		return 0
@@ -1195,6 +1199,7 @@ function BalloonFloat.applyFloatBlendToFolder(
 	local wantHold = opts.wantHold == true
 	local onGround = opts.onGround == true
 	local fallCatch = opts.fallCatch == true
+	local liftMult = if opts.liftMult ~= nil then opts.liftMult else 1
 
 	liftBlend = math.clamp(liftBlend, 0, 1)
 	if onGround and not wantHold then
@@ -1221,6 +1226,7 @@ function BalloonFloat.applyFloatBlendToFolder(
 		local hrpForce = BalloonFloat.computeStabilizedHrpLiftForce(character, liftBlend, {
 			fallCatch = fallCatch,
 			wantHold = wantHold,
+			liftMult = liftMult,
 		})
 		BalloonFloat.applyHrpFloatLift(character, hrpForce)
 	else

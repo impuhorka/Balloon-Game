@@ -2,6 +2,7 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared_Shooters = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Shooters)
+local ShooterProjectile = require(script.Parent.ShooterProjectile)
 
 local ShooterArcher = {}
 
@@ -249,13 +250,9 @@ function ShooterArcher.Fire(controller, targetPart: BasePart)
 	arrow:PivotTo(CFrame.new(startPos) * launchRot * pivot)
 
 	task.spawn(function()
-		local elapsed = 0
-		while elapsed < travelTime and arrow.Parent do
-			local dt = task.wait()
-			elapsed += dt
-			local pos = startPos + moveDir * (PROJECTILE_SPEED * elapsed)
+		ShooterProjectile.RunFlight(controller.Model, targetPart, startPos, PROJECTILE_SPEED, function(pos, _dir)
 			arrow:PivotTo(CFrame.new(pos) * launchRot * pivot)
-		end
+		end)
 		if arrow.Parent then
 			arrow:Destroy()
 		end

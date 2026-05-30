@@ -2,6 +2,7 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared_Shooters = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Shooters)
+local ShooterProjectile = require(script.Parent.ShooterProjectile)
 
 local ShooterCannon = {}
 
@@ -87,14 +88,9 @@ function ShooterCannon.Fire(controller, targetPart: BasePart)
 	local direction = (targetPos - startPos).Unit
 
 	task.spawn(function()
-		local elapsed = 0
-		while elapsed < travelTime and ball.Parent do
-			local dt = task.wait()
-			elapsed += dt
-			local alpha = math.min(1, elapsed / travelTime)
-			local pos = startPos:Lerp(targetPos, alpha)
-			ball:PivotTo(CFrame.lookAt(pos, pos + direction))
-		end
+		ShooterProjectile.RunFlight(controller.Model, targetPart, startPos, PROJECTILE_SPEED, function(pos, dir)
+			ball:PivotTo(CFrame.lookAt(pos, pos + dir))
+		end)
 		if ball.Parent then
 			ball:Destroy()
 		end

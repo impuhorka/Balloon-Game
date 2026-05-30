@@ -17,6 +17,7 @@ local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
 local Module = {}
 
 local rigsByPlayer: { [Player]: any } = setmetatable({}, { __mode = "k" })
+local sessionHpByModel: { [Model]: number } = setmetatable({}, { __mode = "k" })
 
 local PlayerRig = {}
 PlayerRig.__index = PlayerRig
@@ -48,6 +49,34 @@ local function prepareBalloonDataForSession(player: Player)
 	local names = BalloonRigKit.normalizeToConfigNames(data.Balloons)
 	Server_Data:SetValue(player, "Balloons", names)
 	Server_Data:SetValue(player, "EquippedBalloons", runtimeEquippedFromOwned(names))
+end
+
+local function getPlayerSessionEquipped(playerRig: any?, player: Player): { any }
+	if playerRig and type(playerRig._sessionEquipped) == "table" then
+		return playerRig._sessionEquipped
+	end
+	local data = Server_Data:GetData(player)
+	return data and type(data.EquippedBalloons) == "table" and data.EquippedBalloons or {}
+end
+
+local function getSessionModelHp(balloonModel: Model, configName: string): number
+	local hp = sessionHpByModel[balloonModel]
+	if hp == nil then
+		hp = getBalloonMaxHp(configName)
+		sessionHpByModel[balloonModel] = hp
+	end
+	return hp
+end
+
+local function fireBalloonPopEffect(worldPos: Vector3)
+	local events = ReplicatedStorage:FindFirstChild("Events")
+	local playEffect = events and events:FindFirstChild("PlayEffect")
+	if playEffect and playEffect:IsA("RemoteEvent") then
+		playEffect:FireAllClients({
+			effectType = "balloonPop",
+			position = worldPos,
+		})
+	end
 end
 
 local function maxTotalAllowed(): number
@@ -109,6 +138,20 @@ local function signaturesEqual(a: { string }, b: { string }): boolean
 	return true
 end
 
+local function initPlayerSessionEquipped(playerRig: any, player: Player)
+	local data = Server_Data:GetData(player)
+	local equipped = data and type(data.EquippedBalloons) == "table" and data.EquippedBalloons or {}
+	local session: { any } = {}
+	for _, entry in ipairs(equipped) do
+		local configName = BalloonRigKit.getEntryConfigName(entry)
+		if configName then
+			table.insert(session, { configName, getBalloonMaxHp(configName) })
+		end
+	end
+	playerRig._sessionEquipped = session
+	playerRig._sessionEquippedSig = equippedStructureSignature(session)
+end
+
 local function syncBalloonModelHp(character: Model, equipped: { any }, pulseIndex: number?)
 	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
 	if not folder then
@@ -133,9 +176,7 @@ local function syncBalloonModelHp(character: Model, equipped: { any }, pulseInde
 			continue
 		end
 
-		local hp = if type(entry) == "table"
-			then math.max(0, math.floor(tonumber(entry[2]) or 0))
-			else getBalloonMaxHp(configName)
+		local hp = getSessionModelHp(child, configName)
 		local def = Shared_Balloons.List[configName]
 		local maxHp = math.max(hp, math.floor(tonumber(def and def.HP) or hp))
 
@@ -269,6 +310,38 @@ local function destroyBalloonModelAtIndex(character: Model, balloonIndex: number
 	end
 
 	return false
+end
+
+local function commitBalloonDestroyed(player: Player, playerRig: any?, equipped: { any }, removedIndex: number)
+	local data = Server_Data:GetData(player)
+	if not data then
+		return
+	end
+
+	local owned = BalloonRigKit.normalizeToConfigNames(data.Balloons or {})
+	if removedIndex >= 1 and removedIndex <= #owned then
+		table.remove(owned, removedIndex)
+	end
+
+	local nextEquipped: { any } = {}
+	for _, entry in ipairs(equipped) do
+		local configName = BalloonRigKit.getEntryConfigName(entry)
+		if configName then
+			local hp = if type(entry) == "table"
+				then math.max(0, math.floor(tonumber(entry[2]) or 0))
+				else getBalloonMaxHp(configName)
+			table.insert(nextEquipped, { configName, hp })
+		end
+	end
+
+	Server_Data:SetValue(player, "Balloons", owned)
+	Server_Data:SetValue(player, "EquippedBalloons", nextEquipped)
+	if playerRig then
+		playerRig._sessionEquipped = nextEquipped
+		playerRig._sessionEquippedSig = equippedStructureSignature(equipped)
+		playerRig._lastOwnedCount = #owned
+		playerRig._lastEquippedSig = equippedStructureSignature(equipped)
+	end
 end
 
 local function applyCombatBalloonPop(playerRig: any, character: Model, equipped: { any }, poppedIndex: number): boolean
@@ -558,7 +631,7 @@ function PlayerRig:_syncBalloonRig(character: Model)
 
 	local head = character:FindFirstChild("Head")
 	local data = Server_Data:GetData(self._player)
-	local equipped = data and type(data.EquippedBalloons) == "table" and data.EquippedBalloons or {}
+	local equipped = getPlayerSessionEquipped(self, self._player)
 	local configNames = BalloonRigKit.configNamesFromEquipped(equipped)
 
 	if #configNames == 0 then
@@ -625,7 +698,14 @@ end
 function PlayerRig:_scheduleSync(character: Model)
 	self._syncToken += 1
 	local token = self._syncToken
-	task.defer(function()
+	local player = self._player
+	task.spawn(function()
+		while player.Parent and character.Parent and token == self._syncToken do
+			if BalloonRigKit.isPlotSpawnReady(player, character) then
+				break
+			end
+			task.wait(0.05)
+		end
 		if token ~= self._syncToken or not character.Parent then
 			return
 		end
@@ -650,6 +730,7 @@ function PlayerRig:Start()
 
 	local data = Server_Data:GetData(player)
 	self._lastOwnedCount = totalBalloonCount(data and data.Balloons)
+	initPlayerSessionEquipped(self, player)
 
 	self._dataConn = replica:ListenToChange({ "Balloons" }, refreshVisuals)
 	self._equippedConn = replica:ListenToChange({ "EquippedBalloons" }, function()
@@ -666,10 +747,11 @@ function PlayerRig:Start()
 		local equippedNow = dataNow and type(dataNow.EquippedBalloons) == "table" and dataNow.EquippedBalloons or {}
 		local sig = equippedStructureSignature(equippedNow)
 		if self._lastEquippedSig and signaturesEqual(self._lastEquippedSig, sig) then
-			applyHpOnlyUpdate(player, self, char, equippedNow)
+			applyHpOnlyUpdate(player, self, char, getPlayerSessionEquipped(self, player))
 			return
 		end
 
+		initPlayerSessionEquipped(self, player)
 		self._lastEquippedSig = sig
 		self:_scheduleSync(char)
 	end)
@@ -682,6 +764,7 @@ function PlayerRig:Start()
 		BalloonRig._clearOrphanKnot(character)
 		clearFloatState(character)
 		prepareBalloonDataForSession(player)
+		initPlayerSessionEquipped(self, player)
 		local data = Server_Data:GetData(player)
 		self._lastOwnedCount = totalBalloonCount(data and data.Balloons or {})
 		self:_scheduleSync(character)
@@ -838,29 +921,25 @@ function Module.damageEquippedBalloon(player: Player, balloonIndex: number, dama
 		else getBalloonMaxHp(configName)
 	local newHp = math.max(0, currentHp - math.floor(damage))
 	local character = player.Character
-	local owned = BalloonRigKit.normalizeToConfigNames(data.Balloons or {})
 	local playerRig = rigsByPlayer[player]
 	local popped = newHp <= 0
 	local hubChanged = false
 
 	if popped then
 		table.remove(equipped, balloonIndex)
-		if balloonIndex <= #owned then
-			table.remove(owned, balloonIndex)
-		end
 	else
 		equipped[balloonIndex] = { configName, newHp }
 	end
 
 	if playerRig then
 		playerRig._suppressEquippedSync = true
-		playerRig._lastOwnedCount = #owned
 	end
 
 	if popped then
-		Server_Data:SetValue(player, "Balloons", owned)
+		commitBalloonDestroyed(player, playerRig, equipped, balloonIndex)
+	else
+		Server_Data:SetValue(player, "EquippedBalloons", equipped)
 	end
-	Server_Data:SetValue(player, "EquippedBalloons", equipped)
 
 	if character and playerRig then
 		if popped then
@@ -900,6 +979,102 @@ function Module.damageEquippedBalloon(player: Player, balloonIndex: number, dama
 	end
 
 	return popped, popped and #equipped == 0
+end
+
+function Module.damageBalloonFromShooter(balloonModel: Model, damage: number): boolean
+	if damage <= 0 or not balloonModel or not balloonModel.Parent then
+		return false
+	end
+
+	local folder = balloonModel.Parent
+	if not folder or not folder:IsA("Folder") or folder.Name ~= BalloonRigKit.ATTACHED_BALLOONS_FOLDER then
+		return false
+	end
+
+	local character = folder.Parent
+	if not character or not character:IsA("Model") then
+		return false
+	end
+
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then
+		return false
+	end
+
+	local balloonIndex = tonumber(balloonModel:GetAttribute("BalloonIndex"))
+	if not balloonIndex or balloonIndex < 1 then
+		return false
+	end
+
+	local playerRig = rigsByPlayer[player]
+	if not playerRig or type(playerRig._sessionEquipped) ~= "table" then
+		return false
+	end
+
+	local equipped = playerRig._sessionEquipped
+	local entry = equipped[balloonIndex]
+	local configName = BalloonRigKit.getEntryConfigName(entry)
+	if not configName then
+		return false
+	end
+
+	local curAttr = Config.BalloonInstanceHPAttribute or "BalloonCurrentHP"
+	local maxAttr = Config.BalloonInstanceMaxHPAttribute or "BalloonMaxHP"
+	local pulseAttr = Config.BalloonDamagedPulseAttribute or "BalloonDamagedPulse"
+
+	local currentHp = getSessionModelHp(balloonModel, configName)
+	local newHp = math.max(0, currentHp - math.floor(damage))
+	sessionHpByModel[balloonModel] = newHp
+
+	local popPos = balloonModel.PrimaryPart and balloonModel.PrimaryPart.Position
+		or balloonModel:GetPivot().Position
+
+	local popped = newHp <= 0
+	if popped then
+		sessionHpByModel[balloonModel] = nil
+		table.remove(equipped, balloonIndex)
+		playerRig._sessionEquippedSig = equippedStructureSignature(equipped)
+	else
+		equipped[balloonIndex] = { configName, newHp }
+	end
+
+	playerRig._suppressEquippedSync = true
+
+	if popped then
+		fireBalloonPopEffect(popPos)
+		commitBalloonDestroyed(player, playerRig, equipped, balloonIndex)
+		if #equipped == 0 then
+			applyCombatBalloonClear(playerRig, character, equipped)
+		else
+			applyCombatBalloonPop(playerRig, character, equipped, balloonIndex)
+		end
+	else
+		local def = Shared_Balloons.List[configName]
+		local maxHp = math.max(newHp, math.floor(tonumber(def and def.HP) or newHp))
+		balloonModel:SetAttribute(curAttr, newHp)
+		balloonModel:SetAttribute(maxAttr, maxHp)
+		balloonModel:SetAttribute(pulseAttr, os.clock())
+		syncBalloonHpAttributes(character, equipped)
+		playerRig._lastEquippedSig = equippedStructureSignature(equipped)
+	end
+
+	playerRig._suppressEquippedSync = false
+
+	if character and playerRig then
+		syncGameplayFromPhysicalModels(playerRig, character)
+	elseif character and BalloonFloat.getEquippedCount(character) == 0 then
+		applyZeroBalloonGameplayState(nil, character)
+	end
+
+	if character and playerRig and popped and #equipped > 0 then
+		local physicalCount = countAllAttachedBalloonModels(character)
+		if physicalCount ~= #equipped then
+			playerRig._lastEquippedSig = nil
+			playerRig:_scheduleSync(character)
+		end
+	end
+
+	return true
 end
 
 return Module

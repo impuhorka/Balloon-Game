@@ -1306,6 +1306,7 @@ function BalloonRig:_transitionHubForBalloonCount(balloonCount: number)
 	end
 	self._knotPart = nil
 	self._knotAtts = nil
+	self._knotHostLocal = nil
 	BalloonRig._clearTorsoStrapsOnPart(host)
 end
 
@@ -1359,7 +1360,11 @@ function BalloonRig:_ensureKnotHub(host: BasePart, torso: BasePart, character: M
 	end
 
 	for _, child in knotPart:GetChildren() do
-		if child:IsA("WeldConstraint") or child:IsA("AlignPosition") or child:IsA("AlignOrientation") then
+		if child:IsA("WeldConstraint")
+			or child:IsA("AlignPosition")
+			or child:IsA("AlignOrientation")
+			or (child:IsA("Motor6D") and child.Name == BalloonRig.KNOT_MOTOR_NAME)
+		then
 			child:Destroy()
 		end
 	end

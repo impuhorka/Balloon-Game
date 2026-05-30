@@ -3,17 +3,17 @@ local Shooters = {}
 Shooters.Levels = {
 	[1] = {
 		DisplayName = "Archer",
-		DMG = { 10, 100 }, -- per-shot random range [min, max]
+		DMG = { 100, 1000 }, -- per-shot random range [min, max]
 		Cooldown = 2.5
 	},
 	[2] = {
 		DisplayName = "Medium",
-		DMG = { 100, 250 }, -- per-shot random range [min, max]
+		DMG = { 1000, 2500 }, -- per-shot random range [min, max]
 		Cooldown = 2.5,
 	},
 	[3] = {
 		DisplayName = "Hard",
-		DMG = { 250, 10000 }, -- per-shot random range [min, max]
+		DMG = { 2500, 100000 }, -- per-shot random range [min, max]
 		Cooldown = 2.5,
 	},
 }
@@ -60,6 +60,24 @@ function Shooters.GetCooldown(modelName: string): number
 	local level = Shooters.GetLevelForModel(modelName)
 	local cfg = level and Shooters.Levels[level]
 	return cfg and cfg.Cooldown or 2.5
+end
+
+function Shooters.GetDamage(modelName: string): number
+	local level = Shooters.GetLevelForModel(modelName)
+	local cfg = level and Shooters.Levels[level]
+	local range = cfg and cfg.DMG
+	if type(range) ~= "table" then
+		return 0
+	end
+	local minDmg = math.floor(tonumber(range[1]) or 0)
+	local maxDmg = math.floor(tonumber(range[2]) or minDmg)
+	if maxDmg < minDmg then
+		minDmg, maxDmg = maxDmg, minDmg
+	end
+	if maxDmg <= 0 then
+		return 0
+	end
+	return math.random(minDmg, maxDmg)
 end
 
 return Shooters

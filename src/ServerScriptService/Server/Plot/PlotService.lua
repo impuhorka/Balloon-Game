@@ -5,6 +5,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local Shared_RebirthRewards = require(ReplicatedStorage.Modules.Settings.Shared_RebirthRewards)
 
 local PlotService = {}
@@ -495,15 +496,42 @@ end
 ]]
 function PlotService:RespawnPlayerAtPlot(player: Player, plotID: number)
 	local plotData = self.Plots[plotID]
-	if not plotData or not plotData.Model then return end
-	
+	if not plotData or not plotData.Model then
+		return
+	end
+
 	local character = player.Character
-	if not character or not character:FindFirstChild("HumanoidRootPart") then return end
-	
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not root then
+		return
+	end
+
 	local teleportPart = plotData.Model:FindFirstChild("TeleportPart")
-	if not teleportPart then return end
-	
-	character.HumanoidRootPart.CFrame = teleportPart.CFrame * CFrame.new(0, 5, 0)
+	if not teleportPart then
+		return
+	end
+
+	player:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, false)
+	character:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, false)
+	character:SetAttribute(BalloonRigKit.SETTLING_ATTR, true)
+
+	for _, desc in character:GetDescendants() do
+		if desc:IsA("BasePart") then
+			desc.AssemblyLinearVelocity = Vector3.zero
+			desc.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
+	root.CFrame = teleportPart.CFrame * CFrame.new(0, 5, 0)
+
+	task.defer(function()
+		if not player.Parent or player.Character ~= character or not character.Parent then
+			return
+		end
+		player:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, true)
+		character:SetAttribute(BalloonRigKit.PLOT_SPAWN_READY_ATTR, true)
+		character:SetAttribute(BalloonRigKit.SETTLING_ATTR, false)
+	end)
 end
 
 --[[

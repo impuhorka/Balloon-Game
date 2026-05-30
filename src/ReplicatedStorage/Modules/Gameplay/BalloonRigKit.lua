@@ -1,5 +1,7 @@
 --// BalloonRigKit — ownership sig encode/decode (server + client).
 
+local Players = game:GetService("Players")
+
 local Module = {}
 
 local SEP = "\30"
@@ -7,6 +9,20 @@ local SEP = "\30"
 Module.ATTACHED_BALLOONS_FOLDER = "AttachedBalloons"
 Module.TORSO_SHARED_ATT_NAME = "BalloonTorsoStringAnchor"
 Module.SETTLING_ATTR = "BalloonRigSettling"
+Module.PLOT_SPAWN_READY_ATTR = "PlotSpawnReady"
+
+function Module.isPlotSpawnReady(player: Player?, character: Model?): boolean
+	if not player and character then
+		player = Players:GetPlayerFromCharacter(character)
+	end
+	if player and player:GetAttribute(Module.PLOT_SPAWN_READY_ATTR) == true then
+		return true
+	end
+	if character and character:GetAttribute(Module.PLOT_SPAWN_READY_ATTR) == true then
+		return true
+	end
+	return false
+end
 
 function Module.getEntryConfigName(entry: any): string?
 	if type(entry) == "string" and entry ~= "" then

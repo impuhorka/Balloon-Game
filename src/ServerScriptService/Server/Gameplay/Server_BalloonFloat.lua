@@ -6,6 +6,7 @@ local RunService = game:GetService("RunService")
 
 local BalloonFloat = require(ReplicatedStorage.Modules.Gameplay.BalloonFloat)
 local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
+local Server_Propeler = require(script.Parent.Server_Propeler)
 
 local Module = {}
 
@@ -20,7 +21,7 @@ type FloatState = {
 	wasFloating: boolean,
 }
 
-local floatStateByPlayer: { [Player]: FloatState } = {}
+local floatStateByPlayer: { [Player]: FloatState } = setmetatable({}, { __mode = "k" })
 
 local function getState(player: Player): FloatState
 	local st = floatStateByPlayer[player]
@@ -44,7 +45,10 @@ local function tickPlayerFloat(player: Player, dt: number)
 	end
 
 	local st = getState(player)
-	local wantHold = character:GetAttribute(BalloonFloat.HOLD_ATTR) == true
+	local zoneActive = character:GetAttribute("PropelerZoneActive") == true
+	local manualHold = character:GetAttribute(BalloonFloat.HOLD_ATTR) == true
+	local wantHold = manualHold or zoneActive
+	local propBlend = tonumber(character:GetAttribute("PropelerBoostBlend")) or 0
 	local count = BalloonFloat.getEquippedCount(character)
 	local minBalloons = Config.number("BalloonFloatMinBalloons", 1)
 
@@ -52,6 +56,7 @@ local function tickPlayerFloat(player: Player, dt: number)
 		if st.wasFloating or st.liftBlend > 0 then
 			BalloonFloat.landFloatPhysics(character)
 		end
+		Server_Propeler.ClearPlayerBoost(character)
 		st.liftBlend = 0
 		st.releasing = false
 		st.wasFloating = false
@@ -86,8 +91,11 @@ local function tickPlayerFloat(player: Player, dt: number)
 	local isFloating = blend > 0.01 and (wantHold or not airborne)
 	if st.wasFloating and not isFloating and not airborne then
 		BalloonFloat.landFloatPhysics(character)
+		Server_Propeler.ClearPlayerBoost(character)
 	end
 	st.wasFloating = isFloating
+
+	local liftMult = Server_Propeler.GetFloatLiftMult(propBlend, manualHold)
 
 	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
 	if folder and folder:IsA("Folder") then
@@ -95,25 +103,43 @@ local function tickPlayerFloat(player: Player, dt: number)
 			wantHold = wantHold,
 			onGround = not airborne and not wantHold,
 			fallCatch = fallCatch,
+			liftMult = liftMult,
 		})
 		character:SetAttribute(BalloonFloat.ACTIVE_ATTR, applied > 0 and blend > 0.01)
 	else
 		BalloonFloat.clearHrpFloatLift(character)
 	end
 
+	Server_Propeler.ClearPlayerBoost(character)
+
 	local inAirLift = blend > 0.01 and airborne
-	if root and inAirLift then
+	if root and inAirLift and isFloating then
 		if not wantHold and st.releasing then
 			BalloonFloat.bleedReleaseUpwardVelocity(root, blend, dt)
 		end
-		if isFloating then
-			local moving = humanoid and humanoid.MoveDirection.Magnitude > 0.05
+
+		local moving = humanoid and humanoid.MoveDirection.Magnitude > 0.05
+		if propBlend <= 0 then
 			BalloonFloat.syncFloatBalloonHorizontalToRoot(character, root, moving)
-			BalloonFloat.dampFloatingBalloonSwing(character, blend, not moving)
-			BalloonFloat.enforceFloatRiseSpeedCap(root, blend)
+		else
+			local vel = root.AssemblyLinearVelocity
+			root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+		end
+		BalloonFloat.dampFloatingBalloonSwing(character, blend, not moving)
+
+		local cap = BalloonFloat.getFloatMaxRiseSpeed(blend, liftMult)
+		local vel = root.AssemblyLinearVelocity
+		if vel.Y > cap then
+			if propBlend > 0 then
+				root.AssemblyLinearVelocity = Vector3.new(0, cap, 0)
+			else
+				root.AssemblyLinearVelocity = Vector3.new(vel.X, cap, vel.Z)
+			end
 		end
 	elseif root and not wantHold and airborne and Config.flag("BalloonFloatParachuteEnabled") then
 		BalloonFloat.applyParachuteFall(character, root, dt, blend, count)
+	else
+		Server_Propeler.ClearPlayerBoost(character)
 	end
 end
 
@@ -141,6 +167,8 @@ function Module:Init()
 			resetState(player)
 			character:SetAttribute(BalloonFloat.HOLD_ATTR, false)
 			character:SetAttribute(BalloonFloat.ACTIVE_ATTR, false)
+			character:SetAttribute("PropelerZoneActive", nil)
+			character:SetAttribute("PropelerBoostBlend", nil)
 			BalloonFloat.clearMassState(character)
 		end)
 		player.CharacterRemoving:Connect(function()
@@ -155,6 +183,7 @@ function Module:Init()
 	end
 
 	RunService.PreSimulation:Connect(function(dt)
+		Server_Propeler:OnPreSimulation(dt)
 		for _, player in Players:GetPlayers() do
 			tickPlayerFloat(player, dt)
 		end

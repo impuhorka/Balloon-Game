@@ -129,13 +129,13 @@ Config.BalloonFloatMassStableTolerance = 0.08 -- max fractional change between s
 Config.BalloonFloatClampLiftToWeight = true -- hold lift = bodyWeight × ratio (scales with every avatar)
 Config.BalloonFloatHoldLiftWeightRatio = 1.02 -- used when velocity stabilize is off
 Config.BalloonFloatHoldLiftStrength = 1
-Config.BalloonFloatMaxRiseSpeed = 24
+Config.BalloonFloatMaxRiseSpeed = 14
 Config.BalloonFloatVelocityStabilizeEnabled = true
-Config.BalloonFloatTargetRiseSpeed = 20
+Config.BalloonFloatTargetRiseSpeed = 12
 Config.BalloonFloatHoverLiftWeightRatio = 1.1
 Config.BalloonFloatRigDragWeightRatio = 0.02
-Config.BalloonFloatRiseResponse = 11
-Config.BalloonFloatMaxRiseAccel = 20
+Config.BalloonFloatRiseResponse = 9
+Config.BalloonFloatMaxRiseAccel = 14
 Config.BalloonFloatOverspeedBuffer = 6
 Config.BalloonFloatMinHoldLiftWeightRatio = 1.0
 Config.BalloonFloatMinRiseSpeedMult = 0.55

@@ -2,7 +2,7 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared_Shooters = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Shooters)
-local ShooterMotors = require(script.Parent.ShooterMotors)
+local ShooterProjectile = require(script.Parent.ShooterProjectile)
 
 local ShooterSniper = {}
 
@@ -94,14 +94,9 @@ function ShooterSniper.Fire(controller, targetPart: BasePart)
 	local direction = (targetPos - startPos).Unit
 
 	task.spawn(function()
-		local elapsed = 0
-		while elapsed < travelTime and shot.Parent do
-			local dt = task.wait()
-			elapsed += dt
-			local alpha = math.min(1, elapsed / travelTime)
-			local pos = startPos:Lerp(targetPos, alpha)
-			shot:PivotTo(CFrame.lookAt(pos, pos + direction))
-		end
+		ShooterProjectile.RunFlight(controller.Model, targetPart, startPos, PROJECTILE_SPEED, function(pos, dir)
+			shot:PivotTo(CFrame.lookAt(pos, pos + dir))
+		end)
 		if shot.Parent then
 			shot:Destroy()
 		end
@@ -130,21 +125,7 @@ function ShooterSniper.TryShoot(
 		return
 	end
 
-	if not controller.PitchMotor then
-		return
-	end
-
-	local threshold = math.rad(ShooterMotors.GetAttrNumber(
-		controller.Model,
-		"ShotAimThresholdDeg",
-		ShooterMotors.GetAttrNumber(controller.Model, "AimThresholdDeg", 2)
-	))
-	local targetX = controller:GetTargetC1X(controller.PitchMotor, targetPart.Position, minPitch, maxPitch, clampOnly)
-	if targetX == nil then
-		return
-	end
-	local currentX, _, _ = controller.PitchMotor.C1:ToEulerAnglesYXZ()
-	if math.abs(targetX - currentX) > threshold then
+	if not controller:IsAimedAtTarget(targetPart.Position, minPitch, maxPitch, clampOnly) then
 		return
 	end
 
