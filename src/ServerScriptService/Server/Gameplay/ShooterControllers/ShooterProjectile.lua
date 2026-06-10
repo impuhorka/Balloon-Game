@@ -12,18 +12,7 @@ local STEER_BLEND = 0.55
 local MAX_FLIGHT_OVERSHOOT = 0.35
 
 local function getBalloonModelFromPart(part: BasePart?): Model?
-	if not part then
-		return nil
-	end
-	local balloonModel = part:FindFirstAncestorWhichIsA("Model")
-	if not balloonModel then
-		return nil
-	end
-	local folder = balloonModel.Parent
-	if not folder or not folder:IsA("Folder") or folder.Name ~= BalloonRigKit.ATTACHED_BALLOONS_FOLDER then
-		return nil
-	end
-	return balloonModel
+	return BalloonRigKit.getBalloonModelFromPart(part)
 end
 
 local function getHitPart(targetPart: BasePart): BasePart

@@ -60,6 +60,17 @@ local function isUnderNoCollisionRoot(part: BasePart): boolean
 	return false
 end
 
+local function isSpikeDamageTop(part: BasePart): boolean
+	if CollectionService:HasTag(part, "BalloonSpikeDamage") then
+		return true
+	end
+	if part.Name ~= "Top" then
+		return false
+	end
+	local model = part:FindFirstAncestorOfClass("Model")
+	return model ~= nil and model.Name == "SpikeDamage"
+end
+
 local function isBalloonRigPart(part: BasePart): boolean
 	if part.CollisionGroup == balloonGroupName() then
 		return true
@@ -113,7 +124,7 @@ local function restorePart(part: BasePart)
 end
 
 local function applyPart(part: BasePart)
-	if not part:IsA("BasePart") or isBalloonRigPart(part) then
+	if not part:IsA("BasePart") or isBalloonRigPart(part) or isSpikeDamageTop(part) then
 		return
 	end
 

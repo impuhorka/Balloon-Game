@@ -58,6 +58,7 @@ end
 -- Hold Animation
 local CurrentHoldTrack: AnimationTrack? = nil
 local CurrentHoldAnimationId: string? = nil
+local PendingAutoEquipUID: string? = nil
 
 -- Templates
 local HotbarSlotTemplate
@@ -514,6 +515,37 @@ local function fillEmptyHotbarSlots()
 			Module.HotbarSlots[i] = table.remove(itemsNotInHotbar, 1)
 		end
 	end
+end
+
+local function ensureLuckyBlockInHotbar(uid: string)
+	if not uid or uid == "" then
+		return
+	end
+	local item = Module:GetItem(uid)
+	if not item or item.Type ~= "LuckyBlock" then
+		return
+	end
+	for i = 1, InventoryConfig.HotbarSlots do
+		if Module.HotbarSlots[i] == uid then
+			return
+		end
+	end
+	for i = 2, InventoryConfig.HotbarSlots do
+		local existingUID = Module.HotbarSlots[i]
+		if not existingUID then
+			Module.HotbarSlots[i] = uid
+			Module.HotbarChanged:Fire()
+			return
+		end
+		local existingItem = Module:GetItem(existingUID)
+		if existingItem and existingItem.Type ~= "Tool" then
+			Module.HotbarSlots[i] = uid
+			Module.HotbarChanged:Fire()
+			return
+		end
+	end
+	Module.HotbarSlots[InventoryConfig.HotbarSlots] = uid
+	Module.HotbarChanged:Fire()
 end
 
 --[[
@@ -1591,6 +1623,14 @@ function Module:Init()
 				
 				Module.InventoryChanged:Fire()
 				Module.HotbarChanged:Fire()
+				if PendingAutoEquipUID and Module.Inventory[PendingAutoEquipUID] then
+					ensureLuckyBlockInHotbar(PendingAutoEquipUID)
+					local itemData = Module.Inventory[PendingAutoEquipUID]
+					if itemData then
+						onItemClicked(PendingAutoEquipUID, itemData)
+					end
+					PendingAutoEquipUID = nil
+				end
 			end)
 
 			-- When Passes change (e.g. buy Tablet/Sniper), do a FULL re-layout so 2/3 become reserved and items there move to 4-6
@@ -1798,10 +1838,16 @@ function Module:Init()
 		InventoryHandler.OnClientEvent:Connect(function(action, data)
 			if action == "AutoEquip" then
 				local uid = data
-				if uid and Module.Inventory[uid] then
-					-- Equip through client (proper animation handling)
-					local itemData = Module.Inventory[uid]
-					onItemClicked(uid, itemData)
+				if uid then
+					PendingAutoEquipUID = uid
+					if Module.Inventory[uid] then
+						ensureLuckyBlockInHotbar(uid)
+						local itemData = Module.Inventory[uid]
+						if itemData then
+							onItemClicked(uid, itemData)
+							PendingAutoEquipUID = nil
+						end
+					end
 				end
 			end
 		end)

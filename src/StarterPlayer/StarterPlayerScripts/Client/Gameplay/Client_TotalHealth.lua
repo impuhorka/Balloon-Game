@@ -7,6 +7,7 @@ local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
 local Shared_Balloons = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Balloons)
 local Shared_Shorten = require(ReplicatedStorage.Modules.Utilities.Shared_Shorten)
 local BalloonFloat = require(ReplicatedStorage.Modules.Gameplay.BalloonFloat)
+local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local Client_Data = require(script.Parent.Parent.Core.Client_Data)
 
 local Module = {}
@@ -30,6 +31,40 @@ local billboardsFolder: Folder?
 
 local function getHpAttributes(): (string, string)
 	return Config.BalloonTotalHPAttribute or "BalloonTotalHP", Config.BalloonMaxHPAttribute or "BalloonMaxHP"
+end
+
+local function getInstanceHpAttributes(): (string, string)
+	return Config.BalloonInstanceHPAttribute or "BalloonCurrentHP", Config.BalloonInstanceMaxHPAttribute or "BalloonMaxHP"
+end
+
+local function sumHpFromBalloonModels(character: Model): (number?, number?)
+	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
+	if not folder or not folder:IsA("Folder") then
+		return nil, nil
+	end
+
+	local hpAttr, maxAttr = getInstanceHpAttributes()
+	local current = 0
+	local maxHp = 0
+	local found = false
+
+	for _, child in folder:GetChildren() do
+		if not child:IsA("Model") then
+			continue
+		end
+		local hp = tonumber(child:GetAttribute(hpAttr))
+		local max = tonumber(child:GetAttribute(maxAttr))
+		if hp ~= nil and max ~= nil and max > 0 then
+			found = true
+			current += math.max(0, hp)
+			maxHp += max
+		end
+	end
+
+	if found then
+		return current, maxHp
+	end
+	return nil, nil
 end
 
 local function computeHpFromEquipped(equipped: { any }): (number, number)
@@ -96,6 +131,11 @@ end
 local function readHpForCharacter(player: Player, character: Model): (number, number)
 	if BalloonFloat.getEquippedCount(character) <= 0 then
 		return 0, 0
+	end
+
+	local modelCurrent, modelMax = sumHpFromBalloonModels(character)
+	if modelCurrent ~= nil and modelMax ~= nil then
+		return modelCurrent, modelMax
 	end
 
 	local curAttr, maxAttr = getHpAttributes()
@@ -185,6 +225,48 @@ local function bindCharacter(player: Player, character: Model)
 	w.healthLabel = healthLabel
 
 	local curAttr, maxAttr = getHpAttributes()
+	local hpAttr, maxHpAttr = getInstanceHpAttributes()
+	local pulseAttr = Config.BalloonDamagedPulseAttribute or "BalloonDamagedPulse"
+
+	local function bindBalloonModel(balloonModel: Model)
+		table.insert(w.conns, balloonModel:GetAttributeChangedSignal(hpAttr):Connect(function()
+			updateBillboard(player, character)
+		end))
+		table.insert(w.conns, balloonModel:GetAttributeChangedSignal(maxHpAttr):Connect(function()
+			updateBillboard(player, character)
+		end))
+		table.insert(w.conns, balloonModel:GetAttributeChangedSignal(pulseAttr):Connect(function()
+			task.defer(function()
+				if player.Character == character and character.Parent then
+					updateBillboard(player, character)
+				end
+			end)
+		end))
+	end
+
+	local function bindBalloonFolder(folder: Folder)
+		for _, child in folder:GetChildren() do
+			if child:IsA("Model") then
+				bindBalloonModel(child)
+			end
+		end
+		table.insert(w.conns, folder.ChildAdded:Connect(function(child)
+			if child:IsA("Model") then
+				bindBalloonModel(child)
+			end
+		end))
+	end
+
+	local balloonFolder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
+	if balloonFolder and balloonFolder:IsA("Folder") then
+		bindBalloonFolder(balloonFolder)
+	end
+	table.insert(w.conns, character.ChildAdded:Connect(function(child)
+		if child.Name == BalloonRigKit.ATTACHED_BALLOONS_FOLDER and child:IsA("Folder") then
+			bindBalloonFolder(child)
+		end
+	end))
+
 	table.insert(w.conns, character:GetAttributeChangedSignal(curAttr):Connect(function()
 		updateBillboard(player, character)
 	end))

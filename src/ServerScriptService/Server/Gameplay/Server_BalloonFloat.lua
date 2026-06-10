@@ -7,8 +7,10 @@ local RunService = game:GetService("RunService")
 local BalloonFloat = require(ReplicatedStorage.Modules.Gameplay.BalloonFloat)
 local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
 local Server_Propeler = require(script.Parent.Server_Propeler)
+local Server_BoostCircles = require(script.Parent.Server_BoostCircles)
 
 local Module = {}
+local RISE_ROD_ANGLE_FACTOR = 0.7
 
 type FloatState = {
 	liftBlend: number,
@@ -38,6 +40,42 @@ local function resetState(player: Player)
 	floatStateByPlayer[player] = nil
 end
 
+local function setRodAnglesForVerticalState(character: Model, rising: boolean)
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+	for _, child in folder:GetChildren() do
+		if child:IsA("Model") then
+			for _, inst in child:GetDescendants() do
+				if inst:IsA("RodConstraint") and inst.Name == "BalloonRod" then
+					if rising then
+						if inst:GetAttribute("_RiseOrigAngle0") == nil then
+							inst:SetAttribute("_RiseOrigAngle0", inst.LimitAngle0)
+						end
+						if inst:GetAttribute("_RiseOrigAngle1") == nil then
+							inst:SetAttribute("_RiseOrigAngle1", inst.LimitAngle1)
+						end
+						local baseA0 = tonumber(inst:GetAttribute("_RiseOrigAngle0")) or inst.LimitAngle0
+						local baseA1 = tonumber(inst:GetAttribute("_RiseOrigAngle1")) or inst.LimitAngle1
+						inst.LimitAngle0 = baseA0 * RISE_ROD_ANGLE_FACTOR
+						inst.LimitAngle1 = baseA1 * RISE_ROD_ANGLE_FACTOR
+					else
+						local origA0 = tonumber(inst:GetAttribute("_RiseOrigAngle0"))
+						local origA1 = tonumber(inst:GetAttribute("_RiseOrigAngle1"))
+						if origA0 then
+							inst.LimitAngle0 = origA0
+						end
+						if origA1 then
+							inst.LimitAngle1 = origA1
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
 local function tickPlayerFloat(player: Player, dt: number)
 	local character = player.Character
 	if not character then
@@ -53,6 +91,7 @@ local function tickPlayerFloat(player: Player, dt: number)
 	local minBalloons = Config.number("BalloonFloatMinBalloons", 1)
 
 	if count < minBalloons then
+		BalloonFloat.exitFloatRigIsolation(character)
 		if st.wasFloating or st.liftBlend > 0 then
 			BalloonFloat.landFloatPhysics(character)
 		end
@@ -67,6 +106,10 @@ local function tickPlayerFloat(player: Player, dt: number)
 
 	if BalloonFloat.hasMinimumBodyLoaded(character) and not BalloonFloat.isRigSettling(character) then
 		BalloonFloat.syncMassAttributes(character)
+	end
+
+	if not BalloonFloat.isRigSettling(character) then
+		BalloonFloat.ensureBalloonFollowRig(character)
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -89,6 +132,7 @@ local function tickPlayerFloat(player: Player, dt: number)
 	})
 
 	local isFloating = blend > 0.01 and (wantHold or not airborne)
+	local justStartedFloat = isFloating and not st.wasFloating
 	if st.wasFloating and not isFloating and not airborne then
 		BalloonFloat.landFloatPhysics(character)
 		Server_Propeler.ClearPlayerBoost(character)
@@ -96,49 +140,53 @@ local function tickPlayerFloat(player: Player, dt: number)
 	st.wasFloating = isFloating
 
 	local liftMult = Server_Propeler.GetFloatLiftMult(propBlend, manualHold)
+	liftMult *= 1 + Server_BoostCircles.GetCircleFloatLiftBonus(character)
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if folder and folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if folder then
 		local applied = BalloonFloat.applyFloatBlendToFolder(folder, blend, count, character, {
 			wantHold = wantHold,
 			onGround = not airborne and not wantHold,
 			fallCatch = fallCatch,
 			liftMult = liftMult,
+			manualHold = manualHold,
+			propBlend = propBlend,
 		})
 		character:SetAttribute(BalloonFloat.ACTIVE_ATTR, applied > 0 and blend > 0.01)
 	else
 		BalloonFloat.clearHrpFloatLift(character)
 	end
 
-	Server_Propeler.ClearPlayerBoost(character)
+	local isolated = BalloonFloat.isFloatRigIsolated(character)
+	if isolated then
+		BalloonFloat.ensureFollowRigWeld(character)
+		if justStartedFloat then
+			BalloonFloat.softenFollowRigBalloons(character)
+		end
+	end
 
 	local inAirLift = blend > 0.01 and airborne
-	if root and inAirLift and isFloating then
+	local isRising = root and root.AssemblyLinearVelocity.Y > 0.5
+	if not isolated then
+		setRodAnglesForVerticalState(character, isRising == true)
+	end
+	if root and inAirLift and isFloating and not isolated then
 		if not wantHold and st.releasing then
 			BalloonFloat.bleedReleaseUpwardVelocity(root, blend, dt)
 		end
 
 		local moving = humanoid and humanoid.MoveDirection.Magnitude > 0.05
-		if propBlend <= 0 then
-			BalloonFloat.syncFloatBalloonHorizontalToRoot(character, root, moving)
-		else
-			local vel = root.AssemblyLinearVelocity
-			root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
-		end
+		BalloonFloat.syncFloatBalloonHorizontalToRoot(character, root, moving)
 		BalloonFloat.dampFloatingBalloonSwing(character, blend, not moving)
 
-		local cap = BalloonFloat.getFloatMaxRiseSpeed(blend, liftMult)
-		local vel = root.AssemblyLinearVelocity
-		if vel.Y > cap then
-			if propBlend > 0 then
-				root.AssemblyLinearVelocity = Vector3.new(0, cap, 0)
-			else
-				root.AssemblyLinearVelocity = Vector3.new(vel.X, cap, vel.Z)
-			end
-		end
-	elseif root and not wantHold and airborne and Config.flag("BalloonFloatParachuteEnabled") then
+		local cap = BalloonFloat.computeFloatRiseCap(character, blend, manualHold)
+		BalloonFloat.bleedFloatRiseToCap(root, cap, dt)
+	elseif root and inAirLift and isFloating and isolated then
+		local cap = BalloonFloat.computeFloatRiseCap(character, blend, manualHold)
+		BalloonFloat.bleedFloatRiseToCap(root, cap, dt)
+	elseif root and not wantHold and airborne and not isolated and Config.flag("BalloonFloatParachuteEnabled") then
 		BalloonFloat.applyParachuteFall(character, root, dt, blend, count)
-	else
+	elseif propBlend <= 0 and not zoneActive then
 		Server_Propeler.ClearPlayerBoost(character)
 	end
 end
@@ -170,6 +218,8 @@ function Module:Init()
 			character:SetAttribute("PropelerZoneActive", nil)
 			character:SetAttribute("PropelerBoostBlend", nil)
 			BalloonFloat.clearMassState(character)
+			BalloonFloat.exitFloatRigIsolation(character)
+			setRodAnglesForVerticalState(character, false)
 		end)
 		player.CharacterRemoving:Connect(function()
 			resetState(player)
@@ -184,6 +234,7 @@ function Module:Init()
 
 	RunService.PreSimulation:Connect(function(dt)
 		Server_Propeler:OnPreSimulation(dt)
+		Server_BoostCircles:OnPreSimulation(dt)
 		for _, player in Players:GetPlayers() do
 			tickPlayerFloat(player, dt)
 		end

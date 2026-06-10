@@ -7,7 +7,57 @@ local Module = {}
 local SEP = "\30"
 
 Module.ATTACHED_BALLOONS_FOLDER = "AttachedBalloons"
+Module.FLOAT_ANCHOR_FOLDER = "BalloonFloatAnchor"
 Module.TORSO_SHARED_ATT_NAME = "BalloonTorsoStringAnchor"
+
+function Module.resolveBalloonsFolder(character: Model?): Folder?
+	if not character then
+		return nil
+	end
+	local direct = character:FindFirstChild(Module.ATTACHED_BALLOONS_FOLDER)
+	if direct and direct:IsA("Folder") then
+		return direct
+	end
+	local anchor = character:FindFirstChild(Module.FLOAT_ANCHOR_FOLDER)
+	if anchor and anchor:IsA("Folder") then
+		local nested = anchor:FindFirstChild(Module.ATTACHED_BALLOONS_FOLDER)
+		if nested and nested:IsA("Folder") then
+			return nested
+		end
+	end
+	return nil
+end
+
+function Module.resolveCharacterFromBalloonsFolder(folder: Instance?): Model?
+	if not folder or not folder:IsA("Folder") then
+		return nil
+	end
+	local parent = folder.Parent
+	if parent and parent:IsA("Folder") and parent.Name == Module.FLOAT_ANCHOR_FOLDER then
+		local character = parent.Parent
+		if character and character:IsA("Model") then
+			return character
+		end
+	elseif parent and parent:IsA("Model") then
+		return parent
+	end
+	return nil
+end
+
+function Module.getBalloonModelFromPart(part: BasePart?): Model?
+	if not part then
+		return nil
+	end
+	local balloonModel = part:FindFirstAncestorWhichIsA("Model")
+	if not balloonModel then
+		return nil
+	end
+	local folder = balloonModel.Parent
+	if not folder or not folder:IsA("Folder") or folder.Name ~= Module.ATTACHED_BALLOONS_FOLDER then
+		return nil
+	end
+	return balloonModel
+end
 Module.SETTLING_ATTR = "BalloonRigSettling"
 Module.PLOT_SPAWN_READY_ATTR = "PlotSpawnReady"
 

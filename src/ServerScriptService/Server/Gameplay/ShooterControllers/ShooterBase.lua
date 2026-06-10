@@ -174,8 +174,8 @@ function ShooterBase:GetTurnStep(dt: number): number
 end
 
 function ShooterBase:HasActiveBalloon(character: Model): boolean
-	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonRigKit.resolveBalloonsFolder(character)
+	if not folder then
 		return false
 	end
 	for _, child in ipairs(folder:GetChildren()) do
@@ -194,6 +194,14 @@ function ShooterBase:IsPlayerOnGround(character: Model): boolean
 	return humanoid.FloorMaterial ~= Enum.Material.Air
 end
 
+function ShooterBase:IsPlayerFloatingUp(character: Model): boolean
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root or not root:IsA("BasePart") then
+		return false
+	end
+	return root.AssemblyLinearVelocity.Y > 0.5
+end
+
 function ShooterBase:IsPlayerEligible(character: Model): boolean
 	return self:HasActiveBalloon(character) and not self:IsPlayerOnGround(character)
 end
@@ -206,8 +214,8 @@ function ShooterBase:CollectEligibleBalloonParts(): { BasePart }
 			continue
 		end
 
-		local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
-		if not folder or not folder:IsA("Folder") then
+		local folder = BalloonRigKit.resolveBalloonsFolder(character)
+		if not folder then
 			continue
 		end
 
@@ -238,8 +246,8 @@ function ShooterBase:IsTargetStillValid(targetPart: BasePart?): boolean
 		return false
 	end
 
-	local character = folder.Parent
-	if not character or not character:IsA("Model") or not self:IsPlayerEligible(character) then
+	local character = BalloonRigKit.resolveCharacterFromBalloonsFolder(folder)
+	if not character or not self:IsPlayerEligible(character) then
 		return false
 	end
 
@@ -434,7 +442,8 @@ function ShooterBase:RotatePitchX(targetX: number, dt: number, useRestRotation: 
 	local pos = self.PitchMotorC1Pos or rest.Position
 	local restY, restZ = 0, 0
 	if useRestRotation then
-		_, restY, restZ = rest:ToEulerAnglesYXZ()
+		local restX
+		restX, restY, restZ = rest:ToEulerAnglesYXZ()
 	end
 	ShooterMotors.ApplyC1X(motor, pos, restY, restZ, targetX, self:GetTurnStep(dt), self.Model, adaptive)
 end

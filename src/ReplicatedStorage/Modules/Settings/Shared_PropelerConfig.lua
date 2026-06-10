@@ -8,10 +8,21 @@ return {
 	ZoneRadius = 40,
 	ZoneMaxHeightAbove = 75,
 	ManualFloatMult = 1,
-	ZoneAutoFloatMult = 7 / 5 * 1.25,
-	ZoneComboHalfMult = (7 / 2) / 5 * 1.25,
-	ZoneFadeInSeconds = 0.7,
-	ZoneFadeOutSeconds = 1.1,
+	--[[ Scales normal balloon float speed (not a separate boost force). ]]
+	ZoneAutoFloatMult = 2.08,
+	--[[ Multiplies zone float when also holding jump (stacking boost). ]]
+	ZoneManualHoldComboMult = 1.42,
+	ZoneLiftCurvePower = 0.65,
+	ZoneTargetVyBonusScale = 0.72,
+	ZoneEntryLaunchVy = 32,
+	ZoneFadeInSeconds = 0.16,
+	ZoneFadeOutSeconds = 2.8,
+	ZoneExitVyBleedRate = 11,
+	ClientFovNarrow = 13,
+	ClientFovNarrowInRate = 16,
+	ClientFovNarrowOutRate = 4.5,
+	ClientShakeIntensity = 0.14,
+	ClientEntryShakeIntensity = 0.26,
 
 	Units = {
 		{

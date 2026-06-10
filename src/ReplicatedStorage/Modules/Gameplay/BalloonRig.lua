@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
+local BalloonFloat = require(script.Parent.BalloonFloat)
 local BalloonRigKit = require(script.Parent.BalloonRigKit)
 
 local BalloonRig = {}
@@ -60,10 +61,16 @@ function BalloonRig:_refreshAdoptedRefs()
 		return
 	end
 
-	local folder = ch:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
-	self._balloonsFolder = if folder and folder:IsA("Folder") then folder else nil
+	local folder = BalloonFloat.resolveBalloonsFolder(ch)
+	self._balloonsFolder = folder
 
 	local knot = ch:FindFirstChild(BalloonRig.KNOT_PART_NAME)
+	if not knot or not knot:IsA("BasePart") then
+		local anchor = BalloonFloat.getAnchorFolder(ch)
+		if anchor then
+			knot = anchor:FindFirstChild(BalloonRig.KNOT_PART_NAME)
+		end
+	end
 	self._knotPart = if knot and knot:IsA("BasePart") then knot else nil
 	self._hubAtt = nil
 	self._knotAtts = nil
@@ -83,6 +90,20 @@ function BalloonRig:_refreshAdoptedRefs()
 		end
 		self._knotAtts = atts
 		self._hubAtt = self._hubAtt or atts[1]
+	end
+
+	if not self._hubAtt then
+		local anchor = BalloonFloat.getAnchorFolder(ch)
+		if anchor then
+			local followName = Config.BalloonFloatFollowPartName or "BalloonFloatFollow"
+			local follow = anchor:FindFirstChild(followName)
+			if follow and follow:IsA("BasePart") then
+				local followHub = follow:FindFirstChild(BalloonRig.TORSO_SHARED_ATT_NAME)
+				if followHub and followHub:IsA("Attachment") then
+					self._hubAtt = followHub
+				end
+			end
+		end
 	end
 
 	local host = self:_getHubHostPart()
@@ -211,7 +232,7 @@ function BalloonRig:_syncBalloonTethers(balloonModel: Model, balloonIndex: numbe
 	local rowIndex, slotInRow, rowDef = BalloonRig.resolveRow(balloonIndex)
 	local rowBalloonCount = rowDef.count or 6
 	local hubAtt = self:_getKnotAttForBalloon(rowIndex, slotInRow, rowBalloonCount) or self._hubAtt
-	local rodLen = self:_rodLengthForIndex(balloonIndex, hubAtt, downAtt)
+	local rodLen = self:_rowRodLengthBase(balloonIndex)
 	local ropeLen = rodLen + Config.number("BalloonRopeLengthAboveRodStuds", 0.1)
 
 	local rod: RodConstraint? = nil
@@ -252,12 +273,14 @@ function BalloonRig:_syncBalloonTethers(balloonModel: Model, balloonIndex: numbe
 	else
 		rod.Attachment0 = hubAtt
 		rod.Length = rodLen
+		rod.LimitAngle0 = self:_rodLimitAngle0ForHub(hubAtt)
 		rope.Attachment0 = hubAtt
 		rope.Length = ropeLen
 		rope.Visible = self:_ropeVisibleForBalloon(rowIndex, slotInRow, rowBalloonCount, balloonIndex)
 	end
 
-	self:_snapBalloonToRodRest(balloonModel, hubAtt, downAtt, rodLen)
+	local snapIndex = tonumber(balloonModel:GetAttribute("BalloonIndex")) or balloonIndex
+	self:_snapBalloonToRodRest(balloonModel, hubAtt, downAtt, rodLen, snapIndex)
 	self:_zeroBalloonVelocities(balloonModel)
 end
 
@@ -667,6 +690,10 @@ function BalloonRig:_clearKnotConstraints(knotPart: BasePart)
 end
 
 function BalloonRig:_ensureKnotWeldToHost(host: BasePart, torso: BasePart, knotPart: BasePart)
+	if self._character and BalloonFloat.isFloatRigIsolated(self._character) then
+		return
+	end
+
 	self:_clearKnotConstraints(knotPart)
 	local off = BalloonRig.computeTorsoHubOffset(torso)
 	local knotLocal = BalloonRig.computeKnotLocalOffset(off)
@@ -735,9 +762,9 @@ function BalloonRig._clearOrphanKnot(character: Model?)
 	if not character then
 		return
 	end
-	local folder = character:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
 	local knot = character:FindFirstChild(BalloonRig.KNOT_PART_NAME)
-	if knot and (not folder or not folder:IsA("Folder") or #folder:GetChildren() == 0) then
+	if knot and (not folder or #folder:GetChildren() == 0) then
 		knot:Destroy()
 	end
 end
@@ -838,10 +865,6 @@ function BalloonRig:_freezeAllBalloons(): { BasePart }
 end
 
 function BalloonRig:_unfreezeAllBalloons(frozen: { BasePart })
-	if self:_spawnAtRodRestEnabled() then
-		return
-	end
-
 	for _, part in frozen do
 		if part.Parent then
 			part.Anchored = false
@@ -863,7 +886,7 @@ function BalloonRig:_swapHubForBalloonCount(balloonCount: number)
 	end
 
 	self:_unfreezeAllBalloons(frozen)
-	if self:_shouldUseKnotHub(balloonCount) then
+	if self:_shouldUseKnotHub(balloonCount) and not BalloonFloat.isFloatRigIsolated(self._character) then
 		self:_syncTorsoStraps()
 	end
 	self:SyncRopeVisibility()
@@ -968,6 +991,10 @@ function BalloonRig:_applyTorsoStrapRope(
 end
 
 function BalloonRig:_syncTorsoStraps()
+	if self._character and BalloonFloat.isFloatRigIsolated(self._character) then
+		return
+	end
+
 	local host = self:_getHubHostPart()
 	local torso = self:_getTorsoReferencePart() or host
 	if not host or not torso or not self:_shouldUseKnotHub() then
@@ -1023,6 +1050,10 @@ function BalloonRig:_syncTorsoStraps()
 end
 
 function BalloonRig:repairTorsoStrapsIfNeeded()
+	if self._character and BalloonFloat.isFloatRigIsolated(self._character) then
+		return false
+	end
+
 	if not self:_shouldUseKnotHub() then
 		return false
 	end
@@ -1146,7 +1177,7 @@ function BalloonRig:_settleSpawnPhysics()
 		knot.AssemblyAngularVelocity = Vector3.zero
 	end
 
-	local folder = self._balloonsFolder or character:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
+	local folder = self._balloonsFolder or BalloonFloat.resolveBalloonsFolder(character)
 	if folder and folder:IsA("Folder") then
 		for _, child in folder:GetChildren() do
 			if child:IsA("Model") then
@@ -1162,6 +1193,10 @@ function BalloonRig:_settleSpawnPhysics()
 end
 
 function BalloonRig:_repositionKnotToHost()
+	if self._character and BalloonFloat.isFloatRigIsolated(self._character) then
+		return
+	end
+
 	if not self:_isUsingKnotHub() then
 		return
 	end
@@ -1225,8 +1260,8 @@ function BalloonRig:_snapBalloonIndexToRodRest(balloonIndex: number)
 		end
 
 		local hubAtt = self:_getKnotAttForBalloon(rowIndex, slotInRow, rowBalloonCount) or self._hubAtt
-		local rodLen = self:_resolveRodLength(balloonIndex, hubAtt, downAtt, nil)
-		self:_snapBalloonToRodRest(child, hubAtt, downAtt, rodLen)
+		local rodLen = self:_getBalloonRodLength(child, balloonIndex)
+		self:_snapBalloonToRodRest(child, hubAtt, downAtt, rodLen, balloonIndex)
 		self:_zeroBalloonVelocities(child)
 		return
 	end
@@ -1404,8 +1439,8 @@ function BalloonRig.getRowDefs()
 	return _defaultRows()
 end
 
-function BalloonRig.resolveRow(index: number)
-	local globalIndex = math.max(1, math.floor(index))
+function BalloonRig.resolveRow(index: number?)
+	local globalIndex = math.max(1, math.floor(tonumber(index) or 1))
 	local cursor = 0
 	local rowDefs = BalloonRig.getRowDefs()
 
@@ -1445,9 +1480,12 @@ function BalloonRig.spawnLocalOffset(index: number): Vector3
 		angle += (rowIndex - 1) * (math.pi / count)
 	end
 	local r = rowDef.ringRadiusStuds or Config.number("BalloonSpawnRingRadiusStuds", 2.5)
-	local y = rowDef.heightAboveRootStuds or 6.2
-	y -= BalloonRig.getBalloonSpawnLowerStuds()
-	return Vector3.new(math.cos(angle) * r, y, math.sin(angle) * r)
+	local rowStep = Config.number("BalloonRowExtraHeightStepStuds", 1.4)
+	local aboveHub = (rowDef.rodLengthStuds or 8)
+		+ Config.number("BalloonSpawnAboveHubExtraStuds", 2.5)
+		+ math.max(0, rowIndex - 1) * rowStep
+	aboveHub -= BalloonRig.getBalloonSpawnLowerStuds()
+	return Vector3.new(math.cos(angle) * r, aboveHub, math.sin(angle) * r)
 end
 
 function BalloonRig:_spawnCFrame(index: number): CFrame?
@@ -1455,8 +1493,9 @@ function BalloonRig:_spawnCFrame(index: number): CFrame?
 	if not torso then
 		return nil
 	end
-	local offset = BalloonRig.spawnLocalOffset(index)
-	return torso.CFrame * CFrame.new(offset)
+	local hubOff = BalloonRig.computeTorsoHubOffset(torso)
+	local ringOff = BalloonRig.spawnLocalOffset(index)
+	return torso.CFrame * CFrame.new(hubOff + ringOff)
 end
 
 --// Templates & clone ----------------------------------------------------------
@@ -1595,9 +1634,14 @@ end
 
 --// Rod + rope (A0 = knot hub, A1 = DownAttachment; torso strap separate) -----
 
-function BalloonRig:_rodLengthFromConfig(index: number): number
+function BalloonRig:_rowRodLengthBase(index: number?): number
 	local _rowIndex, _slotInRow, rowDef = BalloonRig.resolveRow(index)
-	local base = rowDef.rodLengthStuds or 8
+	return rowDef.rodLengthStuds or 8
+end
+
+function BalloonRig:_rodLengthFromConfig(index: number): number
+	local base = BalloonRig._rowRodLengthBase(index)
+	local _rowIndex, _slotInRow, rowDef = BalloonRig.resolveRow(index)
 	local jitter = rowDef.rodLengthJitterStuds or 0.5
 	return base + math.random() * jitter
 end
@@ -1613,22 +1657,50 @@ function BalloonRig:_resolveRodLength(
 	return math.max(rodLen, span * 0.98)
 end
 
+function BalloonRig:_getBalloonRodLength(balloonModel: Model, index: number): number
+	for _, inst in balloonModel:GetDescendants() do
+		if inst:IsA("RodConstraint") and inst.Name == "BalloonRod" then
+			return inst.Length
+		end
+	end
+	local _rowIndex, _slotInRow, rowDef = BalloonRig.resolveRow(index)
+	return rowDef.rodLengthStuds or 8
+end
+
 function BalloonRig:_spawnDirectionWorld(index: number, hubWorld: Vector3): Vector3
 	local spawnCF = self:_spawnCFrame(index)
 	if not spawnCF then
-		return Vector3.new(0, -1, 0)
+		return Vector3.new(0, 1, 0)
 	end
 
 	local dir = spawnCF.Position - hubWorld
 	if dir.Magnitude < 0.05 then
-		return Vector3.new(0, -1, 0)
+		return Vector3.new(0, 1, 0)
 	end
 
 	return dir.Unit
 end
 
-function BalloonRig:_computeRodRestDownWorld(index: number, hubAtt: Attachment, rodLen: number): Vector3
+function BalloonRig:_computeRodRestDownWorld(
+	index: number,
+	hubAtt: Attachment,
+	rodLen: number,
+	balloonModel: Model?,
+	downAtt: Attachment?
+): Vector3
 	local hubWorld = hubAtt.WorldPosition
+	local spawnCF = self:_spawnCFrame(index)
+	if spawnCF and balloonModel and downAtt then
+		local pivot = balloonModel:GetPivot()
+		local pivotToDown = downAtt.WorldPosition - pivot.Position
+		return spawnCF.Position + pivotToDown
+	end
+	if spawnCF then
+		local toLayout = spawnCF.Position - hubWorld
+		if toLayout.Magnitude > 0.05 then
+			return hubWorld + toLayout.Unit * math.max(rodLen, toLayout.Magnitude)
+		end
+	end
 	return hubWorld + self:_spawnDirectionWorld(index, hubWorld) * rodLen
 end
 
@@ -1659,6 +1731,65 @@ function BalloonRig:_zeroBalloonVelocities(balloonModel: Model)
 	end
 end
 
+function BalloonRig:SnapAllBalloonsToRodRest()
+	self:_refreshAdoptedRefs()
+	self:_snapAllBalloonsToRodRest()
+end
+
+function BalloonRig:AnimateBalloonsIdleLayout(dt: number, time: number, followRate: number?)
+	self:_refreshAdoptedRefs()
+	local folder = self._balloonsFolder
+	if not folder or not self._hubAtt or dt <= 0 then
+		return
+	end
+
+	local bobAmp = Config.number("BalloonFloatIdleBobAmplitudeStuds", 0.42)
+	local bobSpeed = Config.number("BalloonFloatIdleBobSpeed", 1.55)
+	local swayAmp = Config.number("BalloonFloatIdleSwayAmplitudeStuds", 0.22)
+	local swaySpeed = Config.number("BalloonFloatIdleSwaySpeed", 1.05)
+	local phaseSpread = Config.number("BalloonFloatIdlePhaseSpread", 0.85)
+	local rate = followRate or Config.number("BalloonFloatLocalBalloonFollowRate", 7)
+	local alpha = 1 - math.exp(-rate * dt)
+
+	for _, child in folder:GetChildren() do
+		if not child:IsA("Model") then
+			continue
+		end
+
+		local balloonIndex = tonumber(child:GetAttribute("BalloonIndex"))
+		if not balloonIndex then
+			continue
+		end
+
+		local rowIndex, slotInRow, rowDef = BalloonRig.resolveRow(balloonIndex)
+		local rowBalloonCount = rowDef.count or 6
+		local downAtt = self:_findDownAttachment(child)
+		if not downAtt then
+			continue
+		end
+
+		local hubAtt = self:_getKnotAttForBalloon(rowIndex, slotInRow, rowBalloonCount) or self._hubAtt
+		local rodLen = self:_getBalloonRodLength(child, balloonIndex)
+		local baseTarget = self:_computeRodRestDownWorld(balloonIndex, hubAtt, rodLen, child, downAtt)
+		local phase = balloonIndex * phaseSpread
+		local hubWorld = hubAtt.WorldPosition
+		local radial = baseTarget - hubWorld
+		local flatRadial = Vector3.new(radial.X, 0, radial.Z)
+		local tangent = if flatRadial.Magnitude > 0.05
+			then Vector3.new(-flatRadial.Z, 0, flatRadial.X).Unit
+			else Vector3.new(1, 0, 0)
+		local bob = math.sin(time * bobSpeed + phase) * bobAmp
+		local sway = math.sin(time * swaySpeed + phase * 1.31) * swayAmp
+		local targetDown = baseTarget + Vector3.new(0, bob, 0) + tangent * sway
+
+		local lerped = downAtt.WorldPosition:Lerp(targetDown, alpha)
+		local delta = lerped - downAtt.WorldPosition
+		if delta.Magnitude > 0.02 then
+			child:PivotTo(child:GetPivot() + delta)
+		end
+	end
+end
+
 function BalloonRig:_snapAllBalloonsToRodRest()
 	local folder = self._balloonsFolder
 	if not folder or not self._hubAtt then
@@ -1683,8 +1814,16 @@ function BalloonRig:_snapAllBalloonsToRodRest()
 		end
 
 		local hubAtt = self:_getKnotAttForBalloon(rowIndex, slotInRow, rowBalloonCount) or self._hubAtt
-		local rodLen = self:_resolveRodLength(balloonIndex, hubAtt, downAtt, nil)
-		self:_snapBalloonToRodRest(child, hubAtt, downAtt, rodLen)
+		local rodLen = self:_rowRodLengthBase(balloonIndex)
+		local ropeLen = rodLen + Config.number("BalloonRopeLengthAboveRodStuds", 0.08)
+		for _, inst in child:GetDescendants() do
+			if inst:IsA("RodConstraint") and inst.Name == "BalloonRod" then
+				inst.Length = rodLen
+			elseif inst:IsA("RopeConstraint") and inst.Name == "BalloonRope" then
+				inst.Length = ropeLen
+			end
+		end
+		self:_snapBalloonToRodRest(child, hubAtt, downAtt, rodLen, balloonIndex)
 		self:_zeroBalloonVelocities(child)
 	end
 end
@@ -1696,15 +1835,27 @@ function BalloonRig:_rodLengthForIndex(index: number, hubAtt: Attachment?, downA
 	return self:_resolveRodLength(index, hubAtt, downAtt, nil)
 end
 
-function BalloonRig:_snapBalloonToRodRest(balloonModel: Model, hubAtt: Attachment, downAtt: Attachment, rodLen: number)
-	local hubWorld = hubAtt.WorldPosition
-	local downWorld = downAtt.WorldPosition
-	local dir = downWorld - hubWorld
-	if dir.Magnitude < 0.05 then
-		return
+function BalloonRig:_snapBalloonToRodRest(
+	balloonModel: Model,
+	hubAtt: Attachment,
+	downAtt: Attachment,
+	rodLen: number,
+	balloonIndex: number?
+)
+	local targetDown: Vector3
+	if balloonIndex then
+		targetDown = self:_computeRodRestDownWorld(balloonIndex, hubAtt, rodLen, balloonModel, downAtt)
+	else
+		local hubWorld = hubAtt.WorldPosition
+		local downWorld = downAtt.WorldPosition
+		local dir = downWorld - hubWorld
+		if dir.Magnitude < 0.05 then
+			return
+		end
+		targetDown = hubWorld + dir.Unit * rodLen
 	end
-	local targetDown = hubWorld + dir.Unit * rodLen
-	local delta = targetDown - downWorld
+
+	local delta = targetDown - downAtt.WorldPosition
 	if delta.Magnitude < 0.01 then
 		return
 	end
@@ -1806,6 +1957,13 @@ function BalloonRig:SyncRopeVisibility()
 	end
 end
 
+function BalloonRig:_rodLimitAngle0ForHub(hubAtt: Attachment?): number
+	if hubAtt and hubAtt.Parent and hubAtt.Parent.Name == BalloonRig.KNOT_PART_NAME then
+		return Config.number("BalloonRodLimitAngle0Knot", 25)
+	end
+	return Config.number("BalloonRodLimitAngle0NoKnot", 20)
+end
+
 function BalloonRig:_attachRodAndRope(
 	downAtt: Attachment,
 	hubAtt: Attachment,
@@ -1824,7 +1982,7 @@ function BalloonRig:_attachRodAndRope(
 	rod.Attachment1 = downAtt
 	rod.Length = rodLen
 	rod.LimitsEnabled = Config.flag("BalloonRodLimitsEnabled")
-	rod.LimitAngle0 = Config.number("BalloonRodLimitAngle0", 27)
+	rod.LimitAngle0 = self:_rodLimitAngle0ForHub(hubAtt)
 	rod.LimitAngle1 = Config.number("BalloonRodLimitAngle1", 90)
 	rod.Visible = Config.flag("BalloonRodVisible")
 	rod.Thickness = Config.number("BalloonRodThicknessStuds", 0.08)
@@ -1858,15 +2016,13 @@ function BalloonRig:_ensureBalloonsFolder(): Folder
 	end
 
 	local folder = self._balloonsFolder
-	if folder and folder.Parent == parent then
+	if folder and folder.Parent then
+		self._balloonsFolder = folder
 		return folder
 	end
-	if folder then
-		folder:Destroy()
-	end
 
-	folder = parent:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
-	if folder and folder:IsA("Folder") then
+	folder = BalloonFloat.resolveBalloonsFolder(parent)
+	if folder then
 		self._balloonsFolder = folder
 		return folder
 	end
@@ -1931,10 +2087,14 @@ function BalloonRig:_installBalloon(configName: string, index: number): Model?
 
 	local rodLen = self:_rodLengthFromConfig(index)
 	balloonModel.Parent = folder
-	self:_pivotBalloonAttachmentToWorld(balloonModel, downAtt, self:_computeRodRestDownWorld(index, knotAtt, rodLen))
+	self:_pivotBalloonAttachmentToWorld(
+		balloonModel,
+		downAtt,
+		self:_computeRodRestDownWorld(index, knotAtt, rodLen, balloonModel, downAtt)
+	)
 
 	rodLen = self:_resolveRodLength(index, knotAtt, downAtt, rodLen)
-	self:_snapBalloonToRodRest(balloonModel, knotAtt, downAtt, rodLen)
+	self:_snapBalloonToRodRest(balloonModel, knotAtt, downAtt, rodLen, index)
 
 	balloonModel:SetAttribute("BalloonConfigName", configName)
 	balloonModel:SetAttribute("BalloonIndex", index)

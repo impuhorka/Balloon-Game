@@ -10,6 +10,12 @@ Config.BalloonMaxHPAttribute = "BalloonMaxHP"
 Config.BalloonInstanceHPAttribute = "BalloonCurrentHP"
 Config.BalloonInstanceMaxHPAttribute = "BalloonMaxHP"
 Config.BalloonDamagedPulseAttribute = "BalloonDamagedPulse"
+Config.BalloonPopSoundId = 125516407397907
+Config.BalloonHitSoundId = 83819603091899
+Config.BalloonPopSoundVolume = 1.1
+Config.BalloonHitSoundVolume = 0.95
+Config.BalloonPopSoundMaxDistance = 190
+Config.BalloonHitSoundMaxDistance = 150
 Config.BalloonHpBillboardTemplateName = "BalloonHP"
 Config.BalloonHpBillboardHideSeconds = 5
 Config.LocalRigRootName = "LocalBalloonRigs"
@@ -54,6 +60,8 @@ Config.BalloonKnotAttachments = {
 }
 Config.BalloonSpawnHeightLowerStuds = 1.2
 Config.BalloonSpawnCloserToKnotStuds = 2 -- raises row spawn toward knot (shorter rods; knot stays independent)
+-- Extra studs above torso hub (top-back anchor); ring Y = rodLength + this per row.
+Config.BalloonSpawnAboveHubExtraStuds = 2.5
 Config.BalloonDownAttachmentName = "DownAttachment"
 Config.BalloonTorsoAnchorTopInsetStuds = 0.06 -- slightly below top edge
 Config.BalloonTorsoAnchorTopBackInsetStuds = 0.08 -- slightly inside back face (upper back)
@@ -63,9 +71,9 @@ Config.BalloonSpawnRingRadiusStuds = 2.5 -- fallback when row omits ringRadiusSt
 	Index 1–6 → row 1, 7–14 → row 2, 15–24 → row 3; beyond that repeats last row size with +steps.
 ]]
 Config.BalloonRows = {
-	{ count = 4, rodLengthStuds = 6, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 4, ringRadiusStuds = 2.6 },
-	{ count = 6, rodLengthStuds = 8.5, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 5.2, ringRadiusStuds = 3.1 },
-	{ count = 6, rodLengthStuds = 11, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 6.5, ringRadiusStuds = 3.6 },
+	{ count = 4, rodLengthStuds = 7, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 4, ringRadiusStuds = 3.4 },
+	{ count = 6, rodLengthStuds = 9, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 5.2, ringRadiusStuds = 3.8 },
+	{ count = 6, rodLengthStuds = 11.5, rodLengthJitterStuds = 0.5, heightAboveRootStuds = 6.5, ringRadiusStuds = 4.4 },
 }
 Config.BalloonRowExtraCount = 10
 Config.BalloonRowExtraRodStepStuds = 3
@@ -78,7 +86,8 @@ Config.BalloonRopeLengthAboveRodStuds = 0.08
 
 --// Rod limits & visuals (sweet spot: floaty but not wild)
 Config.BalloonRodLimitsEnabled = true
-Config.BalloonRodLimitAngle0 = 30
+Config.BalloonRodLimitAngle0NoKnot = 20
+Config.BalloonRodLimitAngle0Knot = 25
 Config.BalloonRodLimitAngle1 = 20
 Config.BalloonRodVisible = false
 Config.BalloonRodThicknessStuds = 0.08
@@ -112,8 +121,8 @@ Config.BalloonLockYawRotation = false -- true = hard-lock yaw via PivotTo (usual
 Config.BalloonLiftForceName = "BalloonLift"
 Config.BalloonFloatMinBalloons = 1
 Config.BalloonFloatNormalDensity = 0.0001
-Config.BalloonFloatNormalLiftY = 1.0
-Config.BalloonFloatHoldLiftPerBalloon = 55
+Config.BalloonFloatNormalLiftY = 1.45
+Config.BalloonFloatHoldLiftPerBalloon = 72
 Config.BalloonFloatReferenceBalloonCount = 50
 --[[ Lift tuned for BalloonFloatReferencePlayerMass; other avatars scale force by (mass / reference).
 	Body mass = HRP.AssemblyMass minus balloon rig parts in that assembly (rods may keep balloons separate).
@@ -139,13 +148,21 @@ Config.BalloonFloatMaxRiseAccel = 14
 Config.BalloonFloatOverspeedBuffer = 6
 Config.BalloonFloatMinHoldLiftWeightRatio = 1.0
 Config.BalloonFloatMinRiseSpeedMult = 0.55
-Config.BalloonFloatRelaxRodsWhileFloating = false
 Config.BalloonFloatRodExtraLengthStuds = 12
 Config.BalloonFloatCentralizedLiftEnabled = true
 Config.BalloonFloatHrpLiftAttachmentName = "BalloonFloatLiftAtt"
 Config.BalloonFloatHrpLiftForceName = "BalloonFloatLift"
-Config.BalloonFloatMasslessBalloonsWhileFloating = false
+Config.BalloonFloatMasslessBalloonsWhileFloating = true
+Config.BalloonFloatNoCollideWhileFloating = false
+Config.BalloonFloatRelaxRodsWhileFloating = false
+-- Follow hub welded to HRP; hold float lift on HRP only (balloons = gentle bob).
+Config.BalloonFloatFollowPartName = "BalloonFloatFollow"
+Config.BalloonFloatAnchorFolderName = "BalloonFloatAnchor"
+Config.BalloonFloatClientVisualRodSnap = true
 Config.BalloonFloatSyncBalloonHorizVelocity = true
+-- Follow hub always welded to HRP. HRP does all hold lift; balloons keep gentle bob only.
+Config.BalloonFloatFollowRigFloatBobMult = 0.12
+Config.BalloonFloatFollowRigFloatStartDamp = 0.55
 Config.BalloonFloatDampBalloonSwing = true
 Config.BalloonFloatBalloonSwingDampFactor = 0.82
 --[[ Release: ease lift off over ~half a second, then parachute glide. ]]
@@ -178,6 +195,7 @@ Config.BalloonFloatFeelFovLerpRate = 10
 Config.BalloonFloatCatchShakeIntensity = 0.28
 Config.BalloonFloatCatchShakeFallVy = -14 -- min fall speed for big catch shake
 Config.BalloonFloatReleaseShakeIntensity = 0.09 -- tiny pop when letting go mid-air
+Config.BalloonPopSwingDampFactor = 0.68 -- damp remaining balloons on pop (no position snap)
 Config.BalloonFloatGlideResponseScale = 0.55 -- softer PD when near target rise speed
 Config.BalloonFloatFallVelocityThreshold = -2 -- Y velocity below this counts as falling
 --[[ While floating: damp extra X/Z drift from balloon/rope swing (stronger at higher excess speed). ]]

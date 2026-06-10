@@ -134,7 +134,11 @@ local function bindBalloon(balloonModel: Model)
 		refreshBalloonBillboard(balloonModel, wiring, show)
 	end))
 	table.insert(wiring.conns, balloonModel:GetAttributeChangedSignal(PULSE_ATTR):Connect(function()
-		refreshBalloonBillboard(balloonModel, wiring, true)
+		task.defer(function()
+			if wiringByBalloon[balloonModel] == wiring and balloonModel.Parent then
+				refreshBalloonBillboard(balloonModel, wiring, true)
+			end
+		end)
 	end))
 	table.insert(wiring.conns, balloonModel:GetAttributeChangedSignal(MAX_HP_ATTR):Connect(function()
 		refreshBalloonBillboard(balloonModel, wiring, wiring.billboard.Enabled)

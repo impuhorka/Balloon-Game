@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared_Shooters = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Shooters)
 local ShooterProjectile = require(script.Parent.ShooterProjectile)
+local ShooterSfx = require(script.Parent.ShooterSfx)
 
 local ShooterCannon = {}
 
@@ -76,6 +77,7 @@ function ShooterCannon.Fire(controller, targetPart: BasePart)
 	end
 
 	ShooterCannon.EmitShot(attachment)
+	ShooterSfx.play(controller.ShootPart, "Cannon")
 
 	local ball = template:Clone()
 	prepBall(ball)

@@ -103,7 +103,12 @@ local function computeBalloonHpTotals(equipped: { any }): (number, number)
 	return current, maxHp
 end
 
+local function getBalloonsFolder(character: Model): Folder?
+	return BalloonFloat.resolveBalloonsFolder(character)
+end
+
 local function clearFloatState(character: Model)
+	BalloonFloat.exitFloatRigIsolation(character)
 	character:SetAttribute(BalloonFloat.ACTIVE_ATTR, false)
 	character:SetAttribute(BalloonFloat.HOLD_ATTR, false)
 	character:SetAttribute(Config.SigAttribute, "")
@@ -153,7 +158,7 @@ local function initPlayerSessionEquipped(playerRig: any, player: Player)
 end
 
 local function syncBalloonModelHp(character: Model, equipped: { any }, pulseIndex: number?)
-	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
+	local folder = getBalloonsFolder(character)
 	if not folder then
 		return
 	end
@@ -183,14 +188,15 @@ local function syncBalloonModelHp(character: Model, equipped: { any }, pulseInde
 		child:SetAttribute(curAttr, hp)
 		child:SetAttribute(maxAttr, maxHp)
 		if pulseIndex and balloonIndex == pulseIndex then
-			child:SetAttribute(pulseAttr, os.clock())
+			local nextPulse = (tonumber(child:GetAttribute(pulseAttr)) or 0) + 1
+			child:SetAttribute(pulseAttr, nextPulse)
 		end
 	end
 end
 
 local function countAllAttachedBalloonModels(character: Model): number
-	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = getBalloonsFolder(character)
+	if not folder then
 		return 0
 	end
 
@@ -220,6 +226,11 @@ local function applyZeroBalloonGameplayState(playerRig: any?, character: Model)
 end
 
 local function syncGameplayFromPhysicalModels(playerRig: any?, character: Model)
+	if playerRig and type(playerRig._sessionEquipped) == "table" and #playerRig._sessionEquipped > 0 then
+		syncBalloonHpAttributes(character, playerRig._sessionEquipped)
+		return
+	end
+
 	local physicalEquipped = buildEquippedFromPhysicalModels(character)
 	if #physicalEquipped == 0 then
 		applyZeroBalloonGameplayState(playerRig, character)
@@ -266,7 +277,7 @@ local function applyHpOnlyUpdate(player: Player, playerRig: any, character: Mode
 end
 
 local function reindexBalloonModels(character: Model, equipped: { any })
-	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
+	local folder = getBalloonsFolder(character)
 	if not folder then
 		return
 	end
@@ -297,7 +308,7 @@ local function needsKnotHub(balloonCount: number): boolean
 end
 
 local function destroyBalloonModelAtIndex(character: Model, balloonIndex: number): boolean
-	local folder = character:FindFirstChild(BalloonRigKit.ATTACHED_BALLOONS_FOLDER)
+	local folder = getBalloonsFolder(character)
 	if not folder then
 		return false
 	end
@@ -366,6 +377,15 @@ local function applyCombatBalloonPop(playerRig: any, character: Model, equipped:
 	syncBalloonHpAttributes(character, equipped)
 	syncBalloonModelHp(character, equipped)
 	playerRig._lastEquippedSig = equippedStructureSignature(equipped)
+	if hubChanging then
+		task.defer(function()
+			if character.Parent then
+				BalloonFloat.refreshBalloonFollowRig(character)
+			end
+		end)
+	else
+		BalloonFloat.onBalloonPopped(character)
+	end
 	return hubChanging
 end
 
@@ -687,9 +707,15 @@ function PlayerRig:_syncBalloonRig(character: Model)
 	character:SetAttribute(Config.SigAttribute, BalloonRigKit.encodeDataBalloons(equipped))
 	syncBalloonHpAttributes(character, equipped)
 	syncBalloonModelHp(character, equipped)
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if folder and folder:IsA("Folder") then
+	local folder = getBalloonsFolder(character)
+	if folder then
 		BalloonFloat.applyFloatBlendToFolder(folder, 0, builtCount, character, {})
+	end
+	if builtCount > 0 then
+		BalloonFloat.ensureBalloonFollowRig(character)
+		if BalloonFloat.isFloatRigIsolated(character) then
+			BalloonFloat.refreshBalloonFollowRig(character)
+		end
 	end
 	self._lastEquippedSig = equippedStructureSignature(equipped)
 	self._syncRetryCount = 0
@@ -883,12 +909,14 @@ function Module:Init()
 				rig:SyncHubOrientation()
 			end
 
-			if character and character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER) then
-				local taut = character:GetAttribute(BalloonFloat.HOLD_ATTR) == true
-					or character:GetAttribute(BalloonFloat.ACTIVE_ATTR) == true
-				BalloonFloat.syncTorsoStrapRopes(character, taut)
-				if rig:_shouldUseKnotHub() then
-					rig:repairTorsoStrapsIfNeeded()
+			if character and BalloonFloat.resolveBalloonsFolder(character) then
+				if not BalloonFloat.isFloatRigIsolated(character) then
+					local taut = character:GetAttribute(BalloonFloat.HOLD_ATTR) == true
+						or character:GetAttribute(BalloonFloat.ACTIVE_ATTR) == true
+					BalloonFloat.syncTorsoStrapRopes(character, taut)
+					if rig:_shouldUseKnotHub() then
+						rig:repairTorsoStrapsIfNeeded()
+					end
 				end
 			end
 
@@ -991,8 +1019,8 @@ function Module.damageBalloonFromShooter(balloonModel: Model, damage: number): b
 		return false
 	end
 
-	local character = folder.Parent
-	if not character or not character:IsA("Model") then
+	local character = BalloonFloat.resolveCharacterFromBalloonsFolder(folder)
+	if not character then
 		return false
 	end
 
@@ -1017,10 +1045,6 @@ function Module.damageBalloonFromShooter(balloonModel: Model, damage: number): b
 	if not configName then
 		return false
 	end
-
-	local curAttr = Config.BalloonInstanceHPAttribute or "BalloonCurrentHP"
-	local maxAttr = Config.BalloonInstanceMaxHPAttribute or "BalloonMaxHP"
-	local pulseAttr = Config.BalloonDamagedPulseAttribute or "BalloonDamagedPulse"
 
 	local currentHp = getSessionModelHp(balloonModel, configName)
 	local newHp = math.max(0, currentHp - math.floor(damage))
@@ -1049,12 +1073,9 @@ function Module.damageBalloonFromShooter(balloonModel: Model, damage: number): b
 			applyCombatBalloonPop(playerRig, character, equipped, balloonIndex)
 		end
 	else
-		local def = Shared_Balloons.List[configName]
-		local maxHp = math.max(newHp, math.floor(tonumber(def and def.HP) or newHp))
-		balloonModel:SetAttribute(curAttr, newHp)
-		balloonModel:SetAttribute(maxAttr, maxHp)
-		balloonModel:SetAttribute(pulseAttr, os.clock())
+		Server_Data:SetValue(player, "EquippedBalloons", equipped)
 		syncBalloonHpAttributes(character, equipped)
+		syncBalloonModelHp(character, equipped, balloonIndex)
 		playerRig._lastEquippedSig = equippedStructureSignature(equipped)
 	end
 
@@ -1075,6 +1096,51 @@ function Module.damageBalloonFromShooter(balloonModel: Model, damage: number): b
 	end
 
 	return true
+end
+
+function Module.damageBalloonFromSpike(balloonModel: Model): boolean
+	if not balloonModel or not balloonModel.Parent then
+		return false
+	end
+
+	local folder = balloonModel.Parent
+	if not folder or not folder:IsA("Folder") or folder.Name ~= BalloonRigKit.ATTACHED_BALLOONS_FOLDER then
+		return false
+	end
+
+	local character = BalloonFloat.resolveCharacterFromBalloonsFolder(folder)
+	if not character then
+		return false
+	end
+
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then
+		return false
+	end
+
+	local balloonIndex = tonumber(balloonModel:GetAttribute("BalloonIndex"))
+	if not balloonIndex or balloonIndex < 1 then
+		return false
+	end
+
+	local playerRig = rigsByPlayer[player]
+	if not playerRig or type(playerRig._sessionEquipped) ~= "table" then
+		return false
+	end
+
+	local entry = playerRig._sessionEquipped[balloonIndex]
+	local configName = BalloonRigKit.getEntryConfigName(entry)
+	if not configName then
+		return false
+	end
+
+	local currentHp = getSessionModelHp(balloonModel, configName)
+	if currentHp <= 0 then
+		return false
+	end
+
+	local damage = math.max(1, math.floor(currentHp / 5))
+	return Module.damageBalloonFromShooter(balloonModel, damage)
 end
 
 return Module

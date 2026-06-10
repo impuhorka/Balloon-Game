@@ -1,9 +1,14 @@
 --// BalloonFloat — hold jump: factor = ReferenceCount / balloonCount on BOTH force and density.
 --// Total lift force = count × (140 × factor) = ReferenceCount × 140 always (e.g. 7000 at ref 50).
 
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
 local Config = require(script.Parent.Parent.ItemConfigs.BalloonConfig)
 local BalloonRigKit = require(script.Parent.BalloonRigKit)
 local Shared_Balloons = require(script.Parent.Parent.ItemConfigs.Shared_Balloons)
+local Shared_PropelerConfig = require(script.Parent.Parent.Settings.Shared_PropelerConfig)
+local Shared_BoosterConfig = require(script.Parent.Parent.Settings.Shared_BoosterConfig)
 
 local Workspace = workspace
 
@@ -21,6 +26,69 @@ BalloonFloat._massProbe = setmetatable({} :: { [Model]: { last: number?, stable:
 local LIFT_FORCE_NAME = Config.BalloonLiftForceName or "BalloonLift"
 local KNOT_PART_NAME = "BalloonStringKnot"
 local TORSO_STRAP_ROPE_PREFIX = "BalloonTorsoStrap"
+local HUB_ATT_NAME = "BalloonTorsoStringAnchor"
+local FOLLOW_PART_NAME = Config.BalloonFloatFollowPartName or "BalloonFloatFollow"
+local ANCHOR_FOLDER_NAME = Config.BalloonFloatAnchorFolderName or "BalloonFloatAnchor"
+local LEGACY_PROXY_PART_NAME = "BalloonFloatProxy"
+local FOLLOW_HOST_WELD_NAME = "BalloonFloatHostWeld"
+
+type RigIsolationState = {
+	savedHubLinks: { { constraint: Constraint, origAtt: Attachment } },
+}
+
+local _rigIsolationState = setmetatable({} :: { [Model]: RigIsolationState }, { __mode = "k" })
+local BalloonRigModule: any = nil
+local function getBalloonRig()
+	if not BalloonRigModule then
+		BalloonRigModule = require(script.Parent.BalloonRig)
+	end
+	return BalloonRigModule
+end
+
+function BalloonFloat.getAnchorFolder(character: Model?): Folder?
+	if not character then
+		return nil
+	end
+	local anchor = character:FindFirstChild(ANCHOR_FOLDER_NAME)
+	if anchor and anchor:IsA("Folder") then
+		return anchor
+	end
+	return nil
+end
+
+function BalloonFloat.resolveBalloonsFolder(character: Model?): Folder?
+	if not character then
+		return nil
+	end
+	local direct = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
+	if direct and direct:IsA("Folder") then
+		return direct
+	end
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if anchor then
+		local nested = anchor:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
+		if nested and nested:IsA("Folder") then
+			return nested
+		end
+	end
+	return nil
+end
+
+function BalloonFloat.resolveCharacterFromBalloonsFolder(folder: Instance?): Model?
+	if not folder or not folder:IsA("Folder") then
+		return nil
+	end
+	local parent = folder.Parent
+	if parent and parent:IsA("Folder") and parent.Name == ANCHOR_FOLDER_NAME then
+		local character = parent.Parent
+		if character and character:IsA("Model") then
+			return character
+		end
+	elseif parent and parent:IsA("Model") then
+		return parent
+	end
+	return nil
+end
 
 local function isBalloonRigPart(part: BasePart, character: Model): boolean
 	if part.Name == KNOT_PART_NAME then
@@ -144,7 +212,7 @@ function BalloonFloat.isFloatAirborne(
 	humanoid: Humanoid?,
 	root: BasePart?,
 	wantHold: boolean,
-	inFloatAirSession: boolean,
+	_inFloatAirSession: boolean,
 	currentLiftBlend: number
 ): boolean
 	if BalloonFloat.isCharacterAirborne(humanoid, root) then
@@ -155,7 +223,8 @@ function BalloonFloat.isFloatAirborne(
 		return true
 	end
 
-	if inFloatAirSession or currentLiftBlend > 0.05 then
+	-- Release fade only counts as airborne while still off the floor.
+	if currentLiftBlend > 0.05 and humanoid and humanoid.FloorMaterial == Enum.Material.Air then
 		return true
 	end
 
@@ -257,7 +326,10 @@ function BalloonFloat.tickLiftBlendState(
 			if not prevHold then
 				st.holdRampElapsed = 0
 			end
-			BalloonFloat.tryGroundPeelForFloat(opts.humanoid, opts.root, wantHold)
+			local peelCharacter = if opts.root then opts.root.Parent else nil
+			if not (peelCharacter and peelCharacter:IsA("Model") and BalloonFloat.isFloatRigIsolated(peelCharacter)) then
+				BalloonFloat.tryGroundPeelForFloat(opts.humanoid, opts.root, wantHold)
+			end
 			st.holdRampElapsed += dt
 			local rampSec = math.max(0.12, Config.number("BalloonFloatHoldRampSeconds", 0.25))
 			local startBlend = Config.number("BalloonFloatHoldRampStartBlend", 0.15)
@@ -293,6 +365,10 @@ function BalloonFloat.tickLiftBlendState(
 
 	if airborne and not st.floatAirSession then
 		st.floatAirSession = true
+	end
+
+	if opts.humanoid and opts.humanoid.FloorMaterial ~= Enum.Material.Air and not wantHold then
+		st.floatAirSession = false
 	end
 
 	st.prevHold = wantHold
@@ -484,7 +560,11 @@ function BalloonFloat.bleedReleaseUpwardVelocity(root: BasePart?, liftBlend: num
 	root.AssemblyLinearVelocity = Vector3.new(vel.X, newVy, vel.Z)
 end
 
-function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend: number, opts: { fallCatch: boolean?, wantHold: boolean?, liftMult: number? }?): number
+function BalloonFloat.computeStabilizedHrpLiftForce(
+	character: Model?,
+	liftBlend: number,
+	opts: { fallCatch: boolean?, wantHold: boolean?, liftMult: number?, manualHold: boolean?, propBlend: number? }?
+): number
 	if not character or liftBlend <= 0.01 then
 		return 0
 	end
@@ -496,6 +576,8 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 
 	local strength = math.clamp(liftBlend, 0, 1)
 	local liftMult = math.max(0, opts and opts.liftMult or 1)
+	local propBlend = math.clamp(opts and opts.propBlend or 0, 0, 1)
+	local manualHold = opts and opts.manualHold == true
 	local weight = mass * Workspace.Gravity
 	local fallCatch = opts and opts.fallCatch == true
 	local wantHold = opts == nil or opts.wantHold ~= false
@@ -525,6 +607,18 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 	local overspeedBuffer = (if fallCatch
 		then Config.number("BalloonFloatRecoveryOverspeedBuffer", 16)
 		else Config.number("BalloonFloatOverspeedBuffer", 8)) * math.sqrt(liftMult)
+	if propBlend > 0 then
+		local zoneVyScale = Shared_PropelerConfig.ZoneTargetVyBonusScale or 0.62
+		local zoneVyBonus = Config.number("BalloonFloatTargetRiseSpeed", 30) * propBlend * zoneVyScale
+		targetVy += zoneVyBonus * 0.5
+		overspeedBuffer += zoneVyBonus
+		maxAccel += Config.number("BalloonFloatMaxRiseAccel", 48) * propBlend * 0.55
+		if manualHold then
+			targetVy += zoneVyBonus * 0.45
+			maxAccel += Config.number("BalloonFloatMaxRiseAccel", 48) * propBlend * 0.35
+			overspeedBuffer += zoneVyBonus * 0.4
+		end
+	end
 	local minRatio = Config.number("BalloonFloatMinHoldLiftWeightRatio", 1.18)
 	local hoverRatio = Config.number("BalloonFloatHoverLiftWeightRatio", 1.24)
 		+ Config.number("BalloonFloatRigDragWeightRatio", 0.06)
@@ -559,6 +653,85 @@ function BalloonFloat.computeStabilizedHrpLiftForce(character: Model?, liftBlend
 	return force
 end
 
+function BalloonFloat.computePropelerLiftMult(propBlend: number, manualHold: boolean): number
+	propBlend = math.clamp(propBlend, 0, 1)
+	local manual = Shared_PropelerConfig.ManualFloatMult or 1
+	local zone = Shared_PropelerConfig.ZoneAutoFloatMult or 2.08
+	local comboMult = Shared_PropelerConfig.ZoneManualHoldComboMult or 1.42
+
+	if propBlend <= 0 then
+		return manual
+	end
+
+	local curvePower = Shared_PropelerConfig.ZoneLiftCurvePower or 0.72
+	local t = if curvePower ~= 1 then propBlend ^ curvePower else propBlend
+	local zoneMult = manual + (zone - manual) * t
+	if manualHold then
+		return zoneMult * comboMult
+	end
+	return zoneMult
+end
+
+function BalloonFloat.dampBalloonPopSwing(character: Model?, factor: number?)
+	if not character then
+		return
+	end
+	factor = math.clamp(factor or Config.number("BalloonPopSwingDampFactor", 0.68), 0, 1)
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+	for _, child in folder:GetChildren() do
+		if child:IsA("Model") then
+			for _, d in child:GetDescendants() do
+				if d:IsA("BasePart") then
+					d.AssemblyLinearVelocity *= factor
+					d.AssemblyAngularVelocity *= factor
+				end
+			end
+		end
+	end
+	local knot = character:FindFirstChild(KNOT_PART_NAME)
+	if not knot or not knot:IsA("BasePart") then
+		local anchor = BalloonFloat.getAnchorFolder(character)
+		if anchor then
+			knot = anchor:FindFirstChild(KNOT_PART_NAME)
+		end
+	end
+	if knot and knot:IsA("BasePart") then
+		knot.AssemblyLinearVelocity *= factor
+		knot.AssemblyAngularVelocity *= factor
+	end
+end
+
+function BalloonFloat.onBalloonPopped(character: Model?)
+	if not character then
+		return
+	end
+	BalloonFloat.dampBalloonPopSwing(character)
+	if _rigIsolationState[character] then
+		BalloonFloat.resyncFollowRigBalloonTethers(character, false)
+		return
+	end
+	local BalloonRig = require(script.Parent.BalloonRig)
+	local rig = BalloonRig.adoptFromCharacter(character)
+	rig:_refreshAdoptedRefs()
+	rig:SyncRopeVisibility()
+end
+
+function BalloonFloat.bleedFloatRiseToCap(root: BasePart, cap: number, dt: number)
+	if cap <= 0 then
+		return
+	end
+	local vel = root.AssemblyLinearVelocity
+	if vel.Y <= cap then
+		return
+	end
+	local rate = Shared_PropelerConfig.ZoneExitVyBleedRate or 11
+	local newVy = vel.Y + (cap - vel.Y) * math.min(1, rate * dt)
+	root.AssemblyLinearVelocity = Vector3.new(vel.X, newVy, vel.Z)
+end
+
 function BalloonFloat.getFloatMaxRiseSpeed(liftBlend: number, liftMult: number?): number
 	liftMult = if liftMult ~= nil then math.max(0, liftMult) else 1
 	if liftMult <= 0 then
@@ -578,6 +751,29 @@ function BalloonFloat.getFloatMaxRiseSpeed(liftBlend: number, liftMult: number?)
 	return cap * speedMult * liftMult
 end
 
+function BalloonFloat.getCircleBoostRiseCapBonus(character: Model?): number
+	if not character then
+		return 0
+	end
+	local blend = tonumber(character:GetAttribute("CircleBoostBlend")) or 0
+	if blend <= 0 then
+		return 0
+	end
+	local tier = character:GetAttribute("CircleBoostTier")
+	local tierDef = if tier == "VIP" then Shared_BoosterConfig.VIP else Shared_BoosterConfig.Normal
+	return (tierDef and tierDef.RiseCapBonus or 42) * blend
+end
+
+function BalloonFloat.computeFloatRiseCap(character: Model?, liftBlend: number, manualHold: boolean): number
+	local propBlend = 0
+	if character then
+		propBlend = tonumber(character:GetAttribute("PropelerBoostBlend")) or 0
+	end
+	local liftMult = BalloonFloat.computePropelerLiftMult(propBlend, manualHold)
+	return BalloonFloat.getFloatMaxRiseSpeed(liftBlend, liftMult)
+		+ BalloonFloat.getCircleBoostRiseCapBonus(character)
+end
+
 function BalloonFloat.enforceFloatRiseSpeedCap(root: BasePart?, liftBlend: number)
 	if not root then
 		return
@@ -594,12 +790,20 @@ function BalloonFloat.enforceFloatRiseSpeedCap(root: BasePart?, liftBlend: numbe
 	end
 end
 
-function BalloonFloat.smoothFloatRiseVelocity(root: BasePart?, liftBlend: number, dt: number)
+function BalloonFloat.smoothFloatRiseVelocity(
+	root: BasePart?,
+	liftBlend: number,
+	dt: number,
+	character: Model?,
+	wantHold: boolean?
+)
 	if not root or liftBlend <= 0.01 or dt <= 0 then
 		return
 	end
 
-	local targetVy = BalloonFloat.getFloatMaxRiseSpeed(liftBlend)
+	local targetVy = if character
+		then BalloonFloat.computeFloatRiseCap(character, liftBlend, wantHold == true)
+		else BalloonFloat.getFloatMaxRiseSpeed(liftBlend)
 	if targetVy <= 0 then
 		return
 	end
@@ -678,8 +882,8 @@ function BalloonFloat.restoreAllFloatRods(character: Model?)
 		return
 	end
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
 		return
 	end
 
@@ -730,8 +934,8 @@ function BalloonFloat.setFloatRodRelax(character: Model?, relax: boolean)
 	end
 
 	local function applyRelaxState(applyRelax: boolean)
-		local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-		if not folder or not folder:IsA("Folder") then
+		local folder = BalloonFloat.resolveBalloonsFolder(character)
+		if not folder then
 			return
 		end
 
@@ -783,8 +987,8 @@ function BalloonFloat.syncFloatBalloonHorizontalToRoot(character: Model?, root: 
 		part.AssemblyLinearVelocity = Vector3.new(targetX, vel.Y, targetZ)
 	end
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if folder and folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if folder then
 		for _, child in folder:GetChildren() do
 			if child:IsA("Model") then
 				for _, d in child:GetDescendants() do
@@ -797,6 +1001,12 @@ function BalloonFloat.syncFloatBalloonHorizontalToRoot(character: Model?, root: 
 	end
 
 	local knot = character:FindFirstChild(KNOT_PART_NAME)
+	if not knot or not knot:IsA("BasePart") then
+		local anchor = BalloonFloat.getAnchorFolder(character)
+		if anchor then
+			knot = anchor:FindFirstChild(KNOT_PART_NAME)
+		end
+	end
 	if knot and knot:IsA("BasePart") then
 		syncPart(knot)
 	end
@@ -808,8 +1018,8 @@ function BalloonFloat.dampFloatingBalloonSwing(character: Model?, blend: number,
 	end
 
 	local factor = math.clamp(Config.number("BalloonFloatBalloonSwingDampFactor", 0.82), 0, 1)
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
 		return
 	end
 
@@ -824,6 +1034,12 @@ function BalloonFloat.dampFloatingBalloonSwing(character: Model?, blend: number,
 	end
 
 	local knot = character:FindFirstChild(KNOT_PART_NAME)
+	if not knot or not knot:IsA("BasePart") then
+		local anchor = BalloonFloat.getAnchorFolder(character)
+		if anchor then
+			knot = anchor:FindFirstChild(KNOT_PART_NAME)
+		end
+	end
 	if knot and knot:IsA("BasePart") then
 		knot.AssemblyAngularVelocity *= factor
 	end
@@ -931,8 +1147,8 @@ function BalloonFloat.getLiveEquippedEntries(character: Model?): { { any } }
 		return {}
 	end
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
 		return {}
 	end
 
@@ -963,8 +1179,8 @@ function BalloonFloat.getEquippedCount(character: Model?): number
 		return 0
 	end
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
 		return 0
 	end
 
@@ -1136,6 +1352,535 @@ function BalloonFloat.clearHrpFloatLift(character: Model?)
 	end
 end
 
+local function clearTorsoStrapRopesOnHost(host: BasePart)
+	for _, child in host:GetChildren() do
+		if child:IsA("RopeConstraint") and string.sub(child.Name, 1, #TORSO_STRAP_ROPE_PREFIX) == TORSO_STRAP_ROPE_PREFIX then
+			child:Destroy()
+		end
+	end
+end
+
+local function destroyLegacyFloatProxy(character: Model)
+	local proxy = character:FindFirstChild(LEGACY_PROXY_PART_NAME)
+	if proxy then
+		proxy:Destroy()
+	end
+end
+
+local function getTorsoPart(character: Model): BasePart?
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	if torso and torso:IsA("BasePart") then
+		return torso
+	end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
+		return hrp
+	end
+	return nil
+end
+
+local function clearKnotWelds(knot: BasePart)
+	for _, child in knot:GetChildren() do
+		if child:IsA("WeldConstraint") then
+			child:Destroy()
+		end
+	end
+end
+
+local function destroyFloatAnchorBundle(character: Model)
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if anchor then
+		anchor:Destroy()
+	end
+	local legacyFollow = character:FindFirstChild(FOLLOW_PART_NAME)
+	if legacyFollow then
+		legacyFollow:Destroy()
+	end
+end
+
+local function clearFollowHostWelds(followPart: BasePart)
+	for _, child in followPart:GetChildren() do
+		if child:IsA("WeldConstraint") and child.Name == FOLLOW_HOST_WELD_NAME then
+			child:Destroy()
+		end
+	end
+end
+
+local function resolveFollowPart(character: Model): BasePart?
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if not anchor then
+		return nil
+	end
+	local follow = anchor:FindFirstChild(FOLLOW_PART_NAME)
+	if follow and follow:IsA("BasePart") then
+		return follow
+	end
+	return nil
+end
+
+local function groundFollowWeldIsValid(character: Model, followPart: BasePart, hrp: BasePart): boolean
+	if followPart.Anchored then
+		return false
+	end
+	for _, child in followPart:GetChildren() do
+		if child:IsA("WeldConstraint") and child.Name == FOLLOW_HOST_WELD_NAME then
+			return child.Part0 == hrp and child.Part1 == followPart
+		end
+	end
+	return false
+end
+
+local function weldFollowPartToHost(character: Model, followPart: BasePart): boolean
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local torso = getTorsoPart(character)
+	if not hrp or not hrp:IsA("BasePart") or not torso then
+		return false
+	end
+
+	if groundFollowWeldIsValid(character, followPart, hrp) then
+		return true
+	end
+
+	local BalloonRig = getBalloonRig()
+	local hubOff = BalloonRig.computeTorsoHubOffset(torso)
+	local hostLocal = BalloonRig.computeHubLocalOffsetOnHrp(hrp, torso, hubOff)
+
+	clearFollowHostWelds(followPart)
+	followPart.Anchored = false
+	followPart.Massless = true
+	followPart.CanCollide = false
+	followPart.CanQuery = false
+	followPart.CanTouch = false
+	followPart.CFrame = hrp.CFrame * CFrame.new(hostLocal)
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = FOLLOW_HOST_WELD_NAME
+	weld.Part0 = hrp
+	weld.Part1 = followPart
+	weld.Parent = followPart
+	return true
+end
+
+local function assignFollowRigNetworkOwner(character: Model)
+	if not RunService:IsServer() then
+		return
+	end
+
+	local player = Players:GetPlayerFromCharacter(character)
+	if not player then
+		return
+	end
+
+	local function setOwner(part: Instance?)
+		if not part or not part:IsA("BasePart") then
+			return
+		end
+		pcall(function()
+			part:SetNetworkOwnershipAuto(false)
+			part:SetNetworkOwner(player)
+		end)
+	end
+
+	setOwner(resolveFollowPart(character))
+
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if anchor then
+		setOwner(anchor:FindFirstChild(KNOT_PART_NAME))
+	end
+end
+
+function BalloonFloat.ensureFollowRigWeld(character: Model?): boolean
+	if not character then
+		return false
+	end
+	local follow = resolveFollowPart(character)
+	if not follow then
+		return false
+	end
+	return weldFollowPartToHost(character, follow)
+end
+
+function BalloonFloat.softenFollowRigBalloons(character: Model?, factor: number?)
+	if not character then
+		return
+	end
+	factor = math.clamp(factor or Config.number("BalloonFloatFollowRigFloatStartDamp", 0.55), 0, 1)
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+	for _, child in folder:GetChildren() do
+		if child:IsA("Model") then
+			for _, d in child:GetDescendants() do
+				if d:IsA("BasePart") then
+					d.AssemblyLinearVelocity *= factor
+					d.AssemblyAngularVelocity *= factor
+				end
+			end
+		end
+	end
+end
+
+local function ensureFloatAnchorFollowPart(anchor: Folder, character: Model): BasePart?
+	local follow = anchor:FindFirstChild(FOLLOW_PART_NAME)
+	if follow and not follow:IsA("BasePart") then
+		follow:Destroy()
+		follow = nil
+	end
+	if not follow then
+		follow = Instance.new("Part")
+		follow.Name = FOLLOW_PART_NAME
+		follow.Size = Vector3.new(0.1, 0.1, 0.1)
+		follow.Transparency = 1
+		follow.CanCollide = false
+		follow.CanQuery = false
+		follow.CanTouch = false
+		follow.Massless = true
+		follow.Anchored = false
+		follow.CollisionGroup = Config.BalloonCollisionGroup or "Balloons"
+		follow.Parent = anchor
+	end
+
+	weldFollowPartToHost(character, follow)
+	return follow
+end
+
+local function knotIsWeldedToFollow(knot: BasePart, followPart: BasePart): boolean
+	for _, child in knot:GetChildren() do
+		if
+			child:IsA("WeldConstraint")
+			and (child.Part0 == followPart or child.Part1 == followPart)
+			and (child.Part0 == knot or child.Part1 == knot)
+		then
+			return true
+		end
+	end
+	return false
+end
+
+local function weldKnotToFollowPart(character: Model, followPart: BasePart, knot: BasePart)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local torso = getTorsoPart(character)
+	if not hrp or not hrp:IsA("BasePart") or not torso then
+		return
+	end
+
+	local BalloonRig = require(script.Parent.BalloonRig)
+	local hubOff = BalloonRig.computeTorsoHubOffset(torso)
+	local knotLocal = BalloonRig.computeKnotLocalOffset(hubOff)
+	local knotHostLocal = BalloonRig.computeHubLocalOffsetOnHrp(hrp, torso, knotLocal)
+	local hubHostLocal = BalloonRig.computeHubLocalOffsetOnHrp(hrp, torso, hubOff)
+
+	clearKnotWelds(knot)
+	knot.CFrame = followPart.CFrame * CFrame.new(knotHostLocal - hubHostLocal)
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = followPart
+	weld.Part1 = knot
+	weld.Parent = knot
+end
+
+local function severCharacterFromBalloonRig(character: Model)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
+		clearTorsoStrapRopesOnHost(hrp)
+	end
+
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if not anchor then
+		return
+	end
+
+	local follow = anchor:FindFirstChild(FOLLOW_PART_NAME)
+	if not follow or not follow:IsA("BasePart") then
+		return
+	end
+
+	local knotOnChar = character:FindFirstChild(KNOT_PART_NAME)
+	if knotOnChar and knotOnChar:IsA("BasePart") then
+		knotOnChar.Parent = anchor
+		weldKnotToFollowPart(character, follow, knotOnChar)
+	end
+end
+
+function BalloonFloat.hasBalloonFollowRig(character: Model?): boolean
+	if not character then
+		return false
+	end
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if not anchor then
+		return false
+	end
+	local follow = anchor:FindFirstChild(FOLLOW_PART_NAME)
+	return follow ~= nil and follow:IsA("BasePart")
+end
+
+function BalloonFloat.snapFollowRigToTorso(character: Model?): boolean
+	return BalloonFloat.ensureFollowRigWeld(character)
+end
+
+function BalloonFloat.ensureFollowRigBalloonsLive(character: Model?)
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+
+	local massScale = BalloonFloat.syncMassAttributes(character)
+	local liftY = Config.number("BalloonFloatNormalLiftY", 1.45) * massScale
+	local density = Config.number("BalloonFloatNormalDensity", 0.0001)
+
+	for _, child in folder:GetChildren() do
+		if not child:IsA("Model") then
+			continue
+		end
+		for _, d in child:GetDescendants() do
+			if d:IsA("BasePart") then
+				d.Anchored = false
+			end
+		end
+		BalloonFloat.applyFloatToModelWithParams(child, liftY, density)
+	end
+end
+
+function BalloonFloat.ensureFollowRigRodLimits(character: Model?)
+	if not character or not _rigIsolationState[character] then
+		return
+	end
+
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+
+	local BalloonRig = require(script.Parent.BalloonRig)
+	local rig = BalloonRig.adoptFromCharacter(character)
+	local limitsEnabled = Config.flag("BalloonRodLimitsEnabled")
+	local limitAngle1 = Config.number("BalloonRodLimitAngle1", 20)
+
+	for _, child in folder:GetChildren() do
+		if not child:IsA("Model") then
+			continue
+		end
+		for _, inst in child:GetDescendants() do
+			if inst:IsA("RodConstraint") and inst.Name == "BalloonRod" then
+				local hubAtt = inst.Attachment0
+				inst.LimitsEnabled = limitsEnabled
+				inst.LimitAngle0 = rig:_rodLimitAngle0ForHub(hubAtt)
+				inst.LimitAngle1 = limitAngle1
+			end
+		end
+	end
+end
+
+function BalloonFloat.tickFollowRigHub(character: Model?, _opts: { floating: boolean?, liftBlend: number? }?)
+	if not character or not BalloonFloat.hasBalloonFollowRig(character) then
+		return
+	end
+	BalloonFloat.ensureFollowRigWeld(character)
+end
+
+local function repointHubConstraintsToFollow(
+	character: Model,
+	followPart: BasePart,
+	saved: { { constraint: Constraint, origAtt: Attachment } }
+)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp or not hrp:IsA("BasePart") then
+		return
+	end
+
+	local hrpHub = hrp:FindFirstChild(HUB_ATT_NAME)
+	if not hrpHub or not hrpHub:IsA("Attachment") then
+		return
+	end
+
+	local followHub = followPart:FindFirstChild(HUB_ATT_NAME)
+	if followHub and not followHub:IsA("Attachment") then
+		followHub:Destroy()
+		followHub = nil
+	end
+	if not followHub then
+		followHub = hrpHub:Clone()
+		followHub.Position = Vector3.zero
+		followHub.Parent = followPart
+	end
+
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
+		return
+	end
+
+	for _, child in folder:GetChildren() do
+		if not child:IsA("Model") then
+			continue
+		end
+		for _, inst in child:GetDescendants() do
+			if (inst:IsA("RodConstraint") or inst:IsA("RopeConstraint"))
+				and (inst.Name == "BalloonRod" or inst.Name == "BalloonRope")
+				and inst.Attachment0 == hrpHub
+			then
+				table.insert(saved, { constraint = inst, origAtt = hrpHub })
+				inst.Attachment0 = followHub
+			end
+		end
+	end
+end
+
+function BalloonFloat.isFloatRigIsolated(character: Model?): boolean
+	return character ~= nil and _rigIsolationState[character] ~= nil
+end
+
+function BalloonFloat.refreshBalloonFollowRig(character: Model?)
+	if not character or not _rigIsolationState[character] then
+		return
+	end
+
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if not anchor then
+		return
+	end
+
+	local followPart = anchor:FindFirstChild(FOLLOW_PART_NAME)
+	if not followPart or not followPart:IsA("BasePart") then
+		return
+	end
+
+	local balloonsFolder = BalloonFloat.resolveBalloonsFolder(character)
+	if balloonsFolder and balloonsFolder.Parent ~= anchor then
+		balloonsFolder.Parent = anchor
+	end
+
+	local knot = character:FindFirstChild(KNOT_PART_NAME) or anchor:FindFirstChild(KNOT_PART_NAME)
+	if knot and knot:IsA("BasePart") then
+		if knot.Parent ~= anchor then
+			knot.Parent = anchor
+		end
+		if not knotIsWeldedToFollow(knot, followPart) then
+			weldKnotToFollowPart(character, followPart, knot)
+		end
+	end
+
+	severCharacterFromBalloonRig(character)
+	BalloonFloat.ensureFollowRigWeld(character)
+	assignFollowRigNetworkOwner(character)
+	BalloonFloat.restoreAllFloatRods(character)
+	BalloonFloat.ensureFollowRigRodLimits(character)
+	BalloonFloat.resyncFollowRigBalloonTethers(character, false)
+	BalloonFloat.ensureFollowRigBalloonsLive(character)
+end
+
+function BalloonFloat.resyncFollowRigBalloonTethers(character: Model?, snapAll: boolean?)
+	if not character or not _rigIsolationState[character] then
+		return
+	end
+
+	local BalloonRig = require(script.Parent.BalloonRig)
+	local rig = BalloonRig.adoptFromCharacter(character)
+	rig:_refreshAdoptedRefs()
+	if snapAll then
+		rig:_snapAllBalloonsToRodRest()
+	end
+	rig:SyncRopeVisibility()
+end
+
+function BalloonFloat.ensureBalloonFollowRig(character: Model?)
+	if not character or _rigIsolationState[character] then
+		return
+	end
+	BalloonFloat.enterFloatRigIsolation(character)
+end
+
+function BalloonFloat.enterFloatRigIsolation(character: Model?)
+	if not character or _rigIsolationState[character] then
+		return
+	end
+
+	destroyLegacyFloatProxy(character)
+
+	local anchor = Instance.new("Folder")
+	anchor.Name = ANCHOR_FOLDER_NAME
+	anchor.Parent = character
+
+	local followPart = ensureFloatAnchorFollowPart(anchor, character)
+	if not followPart then
+		anchor:Destroy()
+		return
+	end
+
+	local state: RigIsolationState = { savedHubLinks = {} }
+
+	local balloonsFolder = BalloonFloat.resolveBalloonsFolder(character)
+	if balloonsFolder and balloonsFolder.Parent ~= anchor then
+		balloonsFolder.Parent = anchor
+	end
+
+	local knot = character:FindFirstChild(KNOT_PART_NAME)
+	if not knot or not knot:IsA("BasePart") then
+		knot = anchor:FindFirstChild(KNOT_PART_NAME)
+	end
+	if knot and knot:IsA("BasePart") then
+		knot.Parent = anchor
+		weldKnotToFollowPart(character, followPart, knot)
+	else
+		repointHubConstraintsToFollow(character, followPart, state.savedHubLinks)
+	end
+
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
+		clearTorsoStrapRopesOnHost(hrp)
+	end
+
+	severCharacterFromBalloonRig(character)
+	BalloonFloat.ensureFollowRigWeld(character)
+	assignFollowRigNetworkOwner(character)
+	BalloonFloat.restoreAllFloatRods(character)
+	BalloonFloat.ensureFollowRigRodLimits(character)
+	BalloonFloat.resyncFollowRigBalloonTethers(character, true)
+	BalloonFloat.ensureFollowRigBalloonsLive(character)
+	_rigIsolationState[character] = state
+end
+
+function BalloonFloat.exitFloatRigIsolation(character: Model?)
+	destroyLegacyFloatProxy(character)
+
+	local state = if character then _rigIsolationState[character] else nil
+	if not character or not state then
+		destroyFloatAnchorBundle(character)
+		return
+	end
+
+	local anchor = BalloonFloat.getAnchorFolder(character)
+	if anchor then
+		local knot = anchor:FindFirstChild(KNOT_PART_NAME)
+		if knot and knot:IsA("BasePart") then
+			knot.Parent = character
+		end
+		local balloonsFolder = anchor:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
+		if balloonsFolder and balloonsFolder:IsA("Folder") then
+			balloonsFolder.Parent = character
+		end
+	end
+
+	local knot = character:FindFirstChild(KNOT_PART_NAME)
+	if knot and knot:IsA("BasePart") then
+		local BalloonRig = require(script.Parent.BalloonRig)
+		local rig = BalloonRig.adoptFromCharacter(character)
+		rig:_repositionKnotToHost()
+		rig:repairTorsoStrapsIfNeeded()
+	elseif #state.savedHubLinks > 0 then
+		for _, entry in state.savedHubLinks do
+			local c = entry.constraint
+			local orig = entry.origAtt
+			if c.Parent and orig.Parent then
+				c.Attachment0 = orig
+			end
+		end
+	end
+
+	_rigIsolationState[character] = nil
+	destroyFloatAnchorBundle(character)
+end
+
 function BalloonFloat.landFloatPhysics(character: Model?)
 	if not character then
 		return
@@ -1143,7 +1888,6 @@ function BalloonFloat.landFloatPhysics(character: Model?)
 	BalloonFloat.clearHrpFloatLift(character)
 	BalloonFloat.restoreBalloonPhysics(character)
 	BalloonFloat.restoreAllFloatRods(character)
-	BalloonFloat.syncTorsoStrapRopes(character, false)
 end
 
 function BalloonFloat.restoreBalloonPhysics(character: Model?)
@@ -1151,8 +1895,8 @@ function BalloonFloat.restoreBalloonPhysics(character: Model?)
 		return
 	end
 
-	local folder = character:FindFirstChild(BalloonFloat.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder then
 		return
 	end
 
@@ -1172,7 +1916,14 @@ function BalloonFloat.applyFloatBlendToFolder(
 	liftBlend: number,
 	balloonCount: number,
 	character: Model?,
-	opts: { wantHold: boolean?, onGround: boolean?, fallCatch: boolean?, liftMult: number? }?
+	opts: {
+		wantHold: boolean?,
+		onGround: boolean?,
+		fallCatch: boolean?,
+		liftMult: number?,
+		manualHold: boolean?,
+		propBlend: number?,
+	}?
 ): number
 	if not balloonsFolder then
 		return 0
@@ -1217,16 +1968,26 @@ function BalloonFloat.applyFloatBlendToFolder(
 		holdBlend = liftBlend
 	end
 	local blendT = smoothstep01(holdBlend)
+	local isolated = character ~= nil and BalloonFloat.isFloatRigIsolated(character)
+	--[[ Isolated follow rig: hub is kinematic (anchored), hold lift on HRP only.
+		Balloons keep gentle VectorForce so rods never yank the player sideways. ]]
+	local useCentralizedLift = Config.flag("BalloonFloatCentralizedLiftEnabled")
+		and (not isolated or floating)
 	local balloonForceY = normalLiftY
-	if not Config.flag("BalloonFloatCentralizedLiftEnabled") then
+	if isolated then
+		local bob = Config.number("BalloonFloatFollowRigFloatBobMult", 0.12)
+		balloonForceY = normalLiftY * (1 + bob * blendT)
+	elseif not useCentralizedLift then
 		balloonForceY = normalLiftY + (holdParams.perBalloonForceY - normalLiftY) * blendT
 	end
 
-	if floating and Config.flag("BalloonFloatCentralizedLiftEnabled") and character then
+	if floating and useCentralizedLift and character then
 		local hrpForce = BalloonFloat.computeStabilizedHrpLiftForce(character, liftBlend, {
 			fallCatch = fallCatch,
 			wantHold = wantHold,
 			liftMult = liftMult,
+			manualHold = opts.manualHold == true,
+			propBlend = opts.propBlend or 0,
 		})
 		BalloonFloat.applyHrpFloatLift(character, hrpForce)
 	else
@@ -1234,17 +1995,15 @@ function BalloonFloat.applyFloatBlendToFolder(
 	end
 
 	if character then
-		BalloonFloat.setFloatRodRelax(character, floating)
-		if floating then
-			BalloonFloat.syncTorsoStrapRopes(character, true)
-		elseif onGround and not wantHold then
-			BalloonFloat.syncTorsoStrapRopes(character, false)
+		if not BalloonFloat.isFloatRigIsolated(character) then
+			BalloonFloat.setFloatRodRelax(character, floating)
 		end
 		if not floating and BalloonFloat._rodRelaxState then
 			BalloonFloat._rodRelaxState[character] = nil
 		end
 	end
 
+	local noCollideFloat = Config.flag("BalloonFloatNoCollideWhileFloating")
 	local applied = 0
 	for _, child in balloonsFolder:GetChildren() do
 		if not child:IsA("Model") then
@@ -1254,10 +2013,13 @@ function BalloonFloat.applyFloatBlendToFolder(
 			BalloonFloat.applyFloatToModelWithParams(child, 0, normalDensity)
 			continue
 		end
-		if masslessFloat and wantHold and holdBlend > 0.01 then
+		if masslessFloat and floating and not isolated then
 			setBalloonMassless(child, true)
 		elseif masslessFloat then
 			setBalloonMassless(child, false)
+		end
+		if noCollideFloat then
+			setBalloonCanCollide(child, not floating)
 		end
 		if BalloonFloat.applyFloatToModelWithParams(child, balloonForceY, normalDensity) then
 			applied += 1

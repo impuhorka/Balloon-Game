@@ -11,10 +11,28 @@ local ATTACHED_BALLOONS_FOLDER = BalloonRigKit.ATTACHED_BALLOONS_FOLDER
 local PULSE_ATTR = Config.BalloonDamagedPulseAttribute or "BalloonDamagedPulse"
 local characterConns: { [Model]: { RBXScriptConnection } } = setmetatable({}, { __mode = "k" })
 
+local function getBalloonSoundPart(balloonModel: Model): BasePart?
+	if balloonModel.PrimaryPart and balloonModel.PrimaryPart:IsA("BasePart") then
+		return balloonModel.PrimaryPart
+	end
+	return balloonModel:FindFirstChildWhichIsA("BasePart", true)
+end
+
 local function bindBalloon(balloonModel: Model)
 	balloonModel:GetAttributeChangedSignal(PULSE_ATTR):Connect(function()
-		if balloonModel.Parent then
-			Client_EffectsLibrary:FlashHighlightFill(balloonModel, "Damage")
+		if not balloonModel.Parent then
+			return
+		end
+		Client_EffectsLibrary:FlashHighlightFill(balloonModel, "Damage")
+		local hitSoundId = Config.BalloonHitSoundId
+		local soundPart = getBalloonSoundPart(balloonModel)
+		if hitSoundId and soundPart then
+			Client_EffectsLibrary:PlayAssetSound3D(soundPart, hitSoundId, {
+				Volume = Config.BalloonHitSoundVolume or 0.95,
+				MinDistance = 6,
+				MaxDistance = Config.BalloonHitSoundMaxDistance or 150,
+				EmitterSize = 3,
+			})
 		end
 	end)
 end

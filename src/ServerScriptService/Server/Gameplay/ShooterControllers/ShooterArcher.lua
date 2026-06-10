@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared_Shooters = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Shooters)
 local ShooterProjectile = require(script.Parent.ShooterProjectile)
+local ShooterSfx = require(script.Parent.ShooterSfx)
 
 local ShooterArcher = {}
 
@@ -224,6 +225,7 @@ function ShooterArcher.Fire(controller, targetPart: BasePart)
 	if controller.ProjectileAttachment then
 		ShooterArcher.EmitShot(controller.ProjectileAttachment)
 	end
+	ShooterSfx.play(controller.ShootPart, "Bow")
 
 	prepArrowFlying(arrow)
 	setArrowVisible(arrow, 0)

@@ -78,8 +78,8 @@ local function getLocalAdoptedRig(): any
 
 	clearAdoptedRig()
 
-	local folder = character:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
-	if not folder or not folder:IsA("Folder") or #folder:GetChildren() == 0 then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if not folder or #folder:GetChildren() == 0 then
 		return nil
 	end
 
@@ -110,13 +110,14 @@ local function bindLocalCharacter(character: Model)
 
 	sigConn = character:GetAttributeChangedSignal(SIG_ATTR):Connect(refreshAdopted)
 
-	local folder = character:FindFirstChild(BalloonRig.ATTACHED_BALLOONS_FOLDER)
-	if folder and folder:IsA("Folder") then
+	local folder = BalloonFloat.resolveBalloonsFolder(character)
+	if folder then
 		balloonsConn = folder.ChildAdded:Connect(refreshAdopted)
 	end
 
 	character.ChildAdded:Connect(function(child)
 		if child.Name == BalloonRig.ATTACHED_BALLOONS_FOLDER and child:IsA("Folder") then
+			-- direct folder on character
 			if balloonsConn then
 				balloonsConn:Disconnect()
 			end

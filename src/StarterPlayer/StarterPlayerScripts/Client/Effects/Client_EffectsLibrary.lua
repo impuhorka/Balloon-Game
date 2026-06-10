@@ -116,6 +116,37 @@ function Effects:PlaySound(parent: Instance, soundName: string, overrideProperti
 	return sound
 end
 
+function Effects:PlayAssetSound3D(
+	parent: Instance,
+	assetId: number | string,
+	opts: {
+		Volume: number?,
+		MinDistance: number?,
+		MaxDistance: number?,
+		EmitterSize: number?,
+	}?
+)
+	if not parent or not assetId then
+		return nil
+	end
+
+	opts = opts or {}
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://" .. tostring(assetId)
+	sound.Volume = opts.Volume or 1
+	sound.RollOffMode = Enum.RollOffMode.InverseTapered
+	sound.RollOffMinDistance = opts.MinDistance or 8
+	sound.RollOffMaxDistance = opts.MaxDistance or 140
+	sound.EmitterSize = opts.EmitterSize or 3
+	Client_Sounds:SetGroup(sound, "SFX")
+	sound.Parent = parent
+	sound:Play()
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+	return sound
+end
+
 --[[
 	Play collection effect (confetti, rainbow highlight, sound, camera zoom)
 	Called when brainrots are successfully collected
@@ -1224,6 +1255,17 @@ function Effects:PlayBalloonPop(worldPos: Vector3)
 	host.Size = Vector3.new(0.2, 0.2, 0.2)
 	host.CFrame = CFrame.new(worldPos)
 	host.Parent = workspace
+
+	local BalloonConfig = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
+	local popSoundId = BalloonConfig.BalloonPopSoundId
+	if popSoundId then
+		Effects:PlayAssetSound3D(host, popSoundId, {
+			Volume = BalloonConfig.BalloonPopSoundVolume or 1.1,
+			MinDistance = 10,
+			MaxDistance = BalloonConfig.BalloonPopSoundMaxDistance or 190,
+			EmitterSize = 5,
+		})
+	end
 
 	local pop = Instance.new("Part")
 	pop.Name = "BalloonPopBurst"

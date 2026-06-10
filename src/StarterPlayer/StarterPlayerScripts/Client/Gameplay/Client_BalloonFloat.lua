@@ -16,6 +16,7 @@ local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local CameraShake = require(script.Parent.Parent.Effects.Client_CameraShake)
 local Client_FOV = require(script.Parent.Parent.Effects.Client_FOV)
 local Config = require(ReplicatedStorage.Modules.ItemConfigs.BalloonConfig)
+local Shared_PropelerConfig = require(ReplicatedStorage.Modules.Settings.Shared_PropelerConfig)
 
 local Module = {}
 
@@ -34,6 +35,8 @@ local prevBalloonCount = 0
 local feelFovBoost = 0
 local jumpHeld = false
 local JUMP_SINK_ACTION = "BalloonFloatJumpSink"
+local prevFollowRigFloating = false
+local prevPropBlend = 0
 
 local LANDING_EFFECTS_FOLDER = "BalloonLandingEffects"
 local LANDING_DEBRIS_GRAY = Color3.fromRGB(132, 132, 136)
@@ -60,6 +63,14 @@ local function isJumpHoldActive(): boolean
 		return false
 	end
 	return jumpHeld
+end
+
+local function getPropellerBlend(character: Model): number
+	return tonumber(character:GetAttribute("PropelerBoostBlend")) or 0
+end
+
+local function isPropellerZoneActive(character: Model): boolean
+	return character:GetAttribute("PropelerZoneActive") == true or getPropellerBlend(character) > 0.01
 end
 
 local function shouldSinkJumpForBalloonFloat(): boolean
@@ -129,6 +140,7 @@ local function resetFallTracking()
 end
 
 local function resetFloatState()
+	prevFollowRigFloating = false
 	lastSentHold = false
 	prevWantHold = false
 	jumpHeld = false
@@ -136,6 +148,7 @@ local function resetFloatState()
 	resetFallTracking()
 	wasAirborne = false
 	prevBalloonCount = 0
+	prevPropBlend = 0
 	feelFovBoost = 0
 	Client_FOV:SetBalloonFloatBoost(0)
 	sendHoldState(false)
@@ -184,8 +197,21 @@ local function bleedPassiveFallHorizontal(
 	root.AssemblyLinearVelocity = Vector3.new(newH.X, vel.Y, newH.Z)
 end
 
-local function updateFloatFeelFov(dt: number, wantHold: boolean, airborne: boolean, balloonCount: number, liftBlend: number, releasing: boolean)
-	if not airborne and liftBlend <= 0.01 and not releasing then
+local function updateFloatFeelFov(
+	dt: number,
+	wantHold: boolean,
+	airborne: boolean,
+	balloonCount: number,
+	liftBlend: number,
+	releasing: boolean,
+	character: Model?
+)
+	local propBlend = 0
+	if character then
+		propBlend = tonumber(character:GetAttribute("PropelerBoostBlend")) or 0
+	end
+
+	if not airborne and liftBlend <= 0.01 and not releasing and propBlend <= 0.01 then
 		feelFovBoost = 0
 		Client_FOV:SetBalloonFloatBoost(0)
 		return
@@ -209,6 +235,25 @@ local function updateFloatFeelFov(dt: number, wantHold: boolean, airborne: boole
 		feelFovBoost = 0
 	end
 	Client_FOV:SetBalloonFloatBoost(feelFovBoost)
+end
+
+local function playPropellerFeelShake(propBlend: number, airborne: boolean, root: BasePart?)
+	if not airborne or not root or propBlend <= 0.05 then
+		return
+	end
+
+	if prevPropBlend < 0.05 and propBlend >= 0.12 then
+		local entryShake = Shared_PropelerConfig.ClientEntryShakeIntensity or 0.26
+		CameraShake:Start(entryShake, 18, 0.3, 0.2)
+		return
+	end
+
+	if propBlend > 0.25 then
+		local rumble = (Shared_PropelerConfig.ClientShakeIntensity or 0.14) * propBlend
+		if math.random() < 0.08 * propBlend then
+			CameraShake:Start(rumble, 20, 0.12, 0.08)
+		end
+	end
 end
 
 local function playFloatFeelShake(
@@ -607,9 +652,10 @@ local function tickJumpHold(dt: number)
 		return
 	end
 
-	local wantHold = isJumpHoldActive()
-	sendHoldState(wantHold)
-	character:SetAttribute(BalloonFloat.HOLD_ATTR, wantHold)
+	local manualHold = isJumpHoldActive()
+	local zoneActive = isPropellerZoneActive(character)
+	local wantHold = manualHold or zoneActive
+	sendHoldState(manualHold)
 
 	local settling = BalloonFloat.isRigSettling(character)
 	local airborne = BalloonFloat.isFloatAirborne(humanoid, root, wantHold, floatState.floatAirSession, floatState.liftBlend)
@@ -651,14 +697,28 @@ local function tickJumpHold(dt: number)
 	wasAirborne = airborne
 	prevBalloonCount = count
 
-	updateFloatFeelFov(dt, wantHold, airborne, count, liftBlend, floatState.releasing)
+	local propBlend = getPropellerBlend(character)
+	playPropellerFeelShake(propBlend, airborne, root)
 
-	if root and hasMinBalloonsNow and not settling then
+	updateFloatFeelFov(dt, wantHold, airborne, count, liftBlend, floatState.releasing, character)
+
+	if character and BalloonFloat.isFloatRigIsolated(character) then
+		local isFloating = liftBlend > 0.01 and (wantHold or not airborne)
+		-- Zone auto-float already has speed; don't damp client-owned rig when hold stacks on booster.
+		if isFloating and not prevFollowRigFloating and propBlend <= 0.05 and prevPropBlend <= 0.05 then
+			BalloonFloat.softenFollowRigBalloons(character)
+		end
+		prevFollowRigFloating = isFloating
+	end
+
+	prevPropBlend = propBlend
+
+	if root and hasMinBalloonsNow and not settling and not BalloonFloat.isFloatRigIsolated(character) then
 		local isFloating = liftBlend > 0.01 and (wantHold or not airborne)
 		if isFloating then
 			stabilizeFloatHorizontal(humanoid, root, liftBlend, dt)
 			if wantHold then
-				BalloonFloat.smoothFloatRiseVelocity(root, liftBlend, dt)
+				BalloonFloat.smoothFloatRiseVelocity(root, liftBlend, dt, character, wantHold)
 			end
 		elseif not wantHold and airborne then
 			bleedPassiveFallHorizontal(humanoid, root, dt, airborne, count, character)

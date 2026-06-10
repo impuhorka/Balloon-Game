@@ -27,6 +27,7 @@ type PropelerUnit = {
 
 type BoostState = {
 	blend: number,
+	lastBlend: number,
 }
 
 local units: { PropelerUnit } = {}
@@ -34,6 +35,8 @@ local boostByPlayer: { [Player]: BoostState } = setmetatable({}, { __mode = "k" 
 
 local BOOST_FORCE_NAME = "PropelerBoost"
 local BOOST_ATT_NAME = "PropelerBoostAtt"
+local BOOST_BASE_ACCEL_ATTR = "PropelerBoostBaseAccel"
+local BOOST_JUMP_EXTRA_ACCEL_ATTR = "PropelerBoostJumpExtraAccel"
 
 local function setPropelerBoostForce(hrp: BasePart, forceY: number)
 	if forceY <= 0 then
@@ -72,27 +75,11 @@ local function setPropelerBoostForce(hrp: BasePart, forceY: number)
 end
 
 function Module.GetFloatLiftMult(propBlend: number, manualHold: boolean): number
-	propBlend = math.clamp(propBlend, 0, 1)
-	local manual = Config.ManualFloatMult or 1
-	local zone = Config.ZoneAutoFloatMult or 1.4
-	local comboBonus = Config.ZoneComboHalfMult or 0.35
-
-	if propBlend <= 0 then
-		return manual
-	end
-
-	local zoneMult = manual + (zone - manual) * propBlend
-	if manualHold then
-		return zoneMult + comboBonus * propBlend
-	end
-	return zoneMult
+	return BalloonFloat.computePropelerLiftMult(propBlend, manualHold)
 end
 
-function Module.ApplyPlayerBoost(_character: Model, _manualHold: boolean)
-end
-
-function Module.GetBoostRiseCap(_character: Model, _manualHold: boolean, baseCap: number): number
-	return baseCap
+function Module.ApplyPlayerBoost(character: Model, _manualHold: boolean)
+	Module.ClearPlayerBoost(character)
 end
 
 function Module.ClearPlayerBoost(character: Model)
@@ -100,6 +87,8 @@ function Module.ClearPlayerBoost(character: Model)
 	if hrp and hrp:IsA("BasePart") then
 		setPropelerBoostForce(hrp, 0)
 	end
+	character:SetAttribute(BOOST_BASE_ACCEL_ATTR, nil)
+	character:SetAttribute(BOOST_JUMP_EXTRA_ACCEL_ATTR, nil)
 end
 
 local function findChildPath(root: Instance, path: { string }): Instance?
@@ -210,7 +199,7 @@ end
 local function getBoostState(player: Player): BoostState
 	local s = boostByPlayer[player]
 	if not s then
-		s = { blend = 0 }
+		s = { blend = 0, lastBlend = 0 }
 		boostByPlayer[player] = s
 	end
 	return s
@@ -256,10 +245,7 @@ local function tickZone(dt: number)
 				local dz = pos.Z - center.Z
 				if dx * dx + dz * dz <= radiusSq then
 					local heightAbove = pos.Y - center.Y
-					if heightAbove > maxHeight then
-						blend = 0
-						state.blend = 0
-					elseif heightAbove >= 0 then
+					if heightAbove >= 0 and heightAbove <= maxHeight then
 						inZone = true
 						blend = math.min(1, state.blend + dt / fadeIn)
 					end
@@ -273,6 +259,14 @@ local function tickZone(dt: number)
 			blend = math.max(0, state.blend - dt / fadeOut)
 		end
 
+		local lastBlend = state.lastBlend or 0
+		if blend > 0.12 and lastBlend < 0.06 then
+			local launchVy = Config.ZoneEntryLaunchVy or 26
+			local vel = hrp.AssemblyLinearVelocity
+			hrp.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + launchVy, vel.Z)
+		end
+
+		state.lastBlend = blend
 		state.blend = blend
 		character:SetAttribute("PropelerBoostBlend", blend)
 

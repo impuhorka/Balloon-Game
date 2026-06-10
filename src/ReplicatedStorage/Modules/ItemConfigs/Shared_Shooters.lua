@@ -3,18 +3,35 @@ local Shooters = {}
 Shooters.Levels = {
 	[1] = {
 		DisplayName = "Archer",
-		DMG = { 100, 1000 }, -- per-shot random range [min, max]
+		DMG = { 100, 50 }, -- per-shot random range [min, max]
 		Cooldown = 2.5
 	},
 	[2] = {
 		DisplayName = "Medium",
-		DMG = { 1000, 2500 }, -- per-shot random range [min, max]
+		DMG = { 200, 100 }, -- per-shot random range [min, max]
 		Cooldown = 2.5,
 	},
 	[3] = {
 		DisplayName = "Hard",
-		DMG = { 2500, 100000 }, -- per-shot random range [min, max]
+		DMG = { 300, 150 }, -- per-shot random range [min, max]
 		Cooldown = 2.5,
+	},
+}
+
+Shooters.WorldSounds = {
+	Cannon = {
+		Id = 130007660024350,
+		Volume = 1.15,
+		MinDistance = 12,
+		MaxDistance = 220,
+		EmitterSize = 6,
+	},
+	Bow = {
+		Id = 100910468671544,
+		Volume = 1,
+		MinDistance = 8,
+		MaxDistance = 175,
+		EmitterSize = 3,
 	},
 }
 

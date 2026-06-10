@@ -21,6 +21,8 @@ local Shared_Shorten = require(ReplicatedStorage.Modules.Utilities.Shared_Shorte
 -- Events
 local Events = ReplicatedStorage:WaitForChild("Events")
 local BrainrotHandlerEvent = Events:WaitForChild("BrainrotHandler")
+local InventoryHandlerEvent = Events:WaitForChild("InventoryHandler")
+local PlayEffectEvent = Events:FindFirstChild("PlayEffect")
 
 local Module = {}
 
@@ -54,6 +56,28 @@ local PlayerDeathConnections = {} -- [player] = connection
 local WalkSchedule = {} -- [uid] = nextWalkTime (only brainrots walk)
 local ReservedSlots = {} -- [spawnerPart][originalUID] = true (brainrots picked up but not collected/despawned)
 local LastSpawnedPerZone = {} -- [zoneID] = configName (last spawned brainrot in that zone, prevents consecutive duplicates)
+local LowestAreaCooldown = {} -- [player] = timestamp
+
+local function notifyLuckyBlockCollected(player, configName)
+	local config = Shared_LuckyBlocks.List[configName]
+	local displayName = (config and config.DisplayName) or "Lucky block"
+	local popupEvent = Events:FindFirstChild("Popup")
+	if popupEvent then
+		popupEvent:FireClient(player, ("%s added to your inventory."):format(displayName), {
+			popupType = "luckyblock_inventory_added",
+			sound = Shared_Sounds.SFX and Shared_Sounds.SFX.Achievement,
+			category = "reward",
+		})
+	end
+	if PlayEffectEvent and PlayEffectEvent:IsA("RemoteEvent") then
+		PlayEffectEvent:FireClient(player, {
+			effectType = "confetti",
+			amount = 24,
+			duration = 1.1,
+			size = 0.8,
+		})
+	end
+end
 
 --[[
 	Sync held items to client (brainrots and lucky blocks)
@@ -158,6 +182,21 @@ local function getSpawnersFolder()
 	local game = Workspace:WaitForChild("Game", 10)
 	if not game then return nil end
 	return game:FindFirstChild("Spawners")
+end
+
+local function getLuckyBlocksWorldFolder(): Instance?
+	local gameFolder = Workspace:FindFirstChild("Game")
+	if not gameFolder then
+		return nil
+	end
+	local folder = gameFolder:FindFirstChild("LuckyBlocks")
+	if folder then
+		return folder
+	end
+	folder = Instance.new("Folder")
+	folder.Name = "LuckyBlocks"
+	folder.Parent = gameFolder
+	return folder
 end
 
 --[[
@@ -806,26 +845,32 @@ end
 	@param spawnerPart Part
 	@return string? - UID or nil on failure
 ]]
-function Module:SpawnLuckyBlock(configName, spawnerPart)
-	-- Find valid spawn position with spacing
-	local spawnPosition = nil
-	for attempt = 1, CONFIG.MaxSpawnAttempts do
-		local testPosition = getRandomPositionInPart(spawnerPart)
-		if isPositionValid(testPosition, spawnerPart) then
-			spawnPosition = testPosition
-			break
+function Module:SpawnLuckyBlock(configName, spawnerPart, options)
+	options = options or {}
+
+	local spawnPosition = options.position
+	if not spawnPosition then
+		for attempt = 1, CONFIG.MaxSpawnAttempts do
+			local testPosition = getRandomPositionInPart(spawnerPart)
+			if isPositionValid(testPosition, spawnerPart) then
+				spawnPosition = testPosition
+				break
+			end
 		end
 	end
-	
+
 	if not spawnPosition then
-		return nil -- No valid position found
+		return nil
 	end
-	
-	-- Generate unique ID
+
 	local uid = HttpService:GenerateGUID(false)
-	
-	-- Random despawn time (same as brainrots)
-	local despawnTime = math.random(CONFIG.DespawnTimeMin, CONFIG.DespawnTimeMax)
+
+	local despawnTime
+	if options.noDespawn then
+		despawnTime = math.huge
+	else
+		despawnTime = math.random(CONFIG.DespawnTimeMin, CONFIG.DespawnTimeMax)
+	end
 	
 	-- Get lucky block model from Assets
 	local luckyBlocksFolder = ReplicatedStorage:FindFirstChild("Assets")
@@ -875,12 +920,15 @@ function Module:SpawnLuckyBlock(configName, spawnerPart)
 	
 	-- Anchor only the PrimaryPart
 	primaryPart.Anchored = true
+	primaryPart.CanTouch = true
+	primaryPart.CanQuery = true
 	
 	local baseModelHeight = primaryPart.Size.Y
-	local groundOffset = 1.5 -- Offset from ground (1.5 studs)
-	
-	-- Position: ground + ground offset + half model height (use PivotTo for proper model positioning)
-	local targetPosition = spawnPosition + Vector3.new(0, groundOffset + (baseModelHeight / 2), 0)
+	local groundOffset = 1.5
+
+	local liftPart = options.spawnerPart or spawnerPart
+	local up = liftPart and liftPart.CFrame.UpVector or Vector3.yAxis
+	local targetPosition = spawnPosition + up * (groundOffset + (baseModelHeight / 2))
 	luckyBlockModel:PivotTo(CFrame.new(targetPosition) * CFrame.Angles(0, math.rad(math.random(0, 360)), 0))
 	
 	-- Get lucky block config
@@ -967,8 +1015,12 @@ function Module:SpawnLuckyBlock(configName, spawnerPart)
 		local timerFrame = billboard:FindFirstChild("Timer", true)
 		timeLabel = timerFrame and timerFrame:FindFirstChild("Time", true)
 		if timerFrame and timeLabel and timeLabel:IsA("TextLabel") then
-			timerFrame.Visible = true
-			timeLabel.Text = tostring(math.ceil(despawnTime)) .. "s"
+			if options.noDespawn then
+				timerFrame.Visible = false
+			else
+				timerFrame.Visible = true
+				timeLabel.Text = tostring(math.ceil(despawnTime)) .. "s"
+			end
 		end
 	end
 	
@@ -977,47 +1029,67 @@ function Module:SpawnLuckyBlock(configName, spawnerPart)
 	proximityPrompt.Name = "PickUpPrompt"
 	proximityPrompt.Parent = luckyBlockModel.PrimaryPart
 	proximityPrompt.RequiresLineOfSight = false
-	proximityPrompt.ActionText = "Pick Up"
-	proximityPrompt.ObjectText = "" -- No price for spawned lucky blocks
-	proximityPrompt.HoldDuration = 0.5
-	proximityPrompt.MaxActivationDistance = 6
+	proximityPrompt.ActionText = "Collect"
+	proximityPrompt.ObjectText = config.DisplayName or configName
+	if options.directToInventory then
+		proximityPrompt.HoldDuration = 0
+	else
+		proximityPrompt.HoldDuration = tonumber(options.holdDuration) or 0.5
+	end
+	proximityPrompt.MaxActivationDistance = 10
 	
 	-- Register lucky block in ActiveLuckyBlocks (not ActiveBrainrots)
 	local luckyBlockData = {
 		UID = uid,
 		Model = luckyBlockModel,
 		ConfigName = configName,
-		Modifier = nil, -- Lucky blocks don't have modifiers
-		Level = nil, -- Lucky blocks don't have levels
+		Modifier = nil,
+		Level = nil,
 		Owner = nil,
-		SpawnerPart = spawnerPart,
-		ZoneID = spawnerPart.Name,
+		SpawnerPart = options.spawnerPart or spawnerPart,
+		ZoneID = spawnerPart and spawnerPart.Name or nil,
 		SpawnTime = tick(),
 		DespawnTimer = despawnTime,
 		Billboard = billboard,
 		TimeLabel = timeLabel,
 		ProximityPrompt = proximityPrompt,
-		ItemType = "LuckyBlock", -- Identify as lucky block
+		ItemType = "LuckyBlock",
+		OnZoneCollected = options.onCollected,
+		SpawnerUnitKey = options.spawnerUnitKey,
 	}
 	
 	ActiveLuckyBlocks[uid] = luckyBlockData
 	
 	-- Setup pickup trigger (routes to correct pickup function)
 	proximityPrompt.Triggered:Connect(function(player)
-		Module:PickupLuckyBlock(player, uid)
+		if options.directToInventory then
+			Module:CollectWorldLuckyBlock(player, uid)
+		else
+			Module:PickupLuckyBlock(player, uid)
+		end
 	end)
 	
-	-- Parent to world (Game.LuckyBlocks folder)
-	luckyBlockModel.Parent = Workspace.Game:FindFirstChild("LuckyBlocks") or Workspace.Game
+	local worldFolder = getLuckyBlocksWorldFolder()
+	if not worldFolder then
+		warn("⚠️ workspace.Game missing — cannot spawn lucky block")
+		luckyBlockModel:Destroy()
+		ActiveLuckyBlocks[uid] = nil
+		return nil
+	end
+	luckyBlockModel.Parent = worldFolder
 	
 	-- Add zone tag for client-side animation management
-	CollectionService:AddTag(luckyBlockModel, spawnerPart.Name .. "_Brainrot")
+	CollectionService:AddTag(luckyBlockModel, (options.zoneTag or spawnerPart.Name) .. "_Brainrot")
 	
 	-- Set Rotate attribute for client-side spinning animation
 	luckyBlockModel:SetAttribute("Rotate", true)
 	
 	-- Add Float tag for client-side animation
 	CollectionService:AddTag(luckyBlockModel, "Float")
+
+	if options.spawnerUnitKey then
+		luckyBlockModel:SetAttribute("SpawnerUnitKey", options.spawnerUnitKey)
+	end
 	
 	return uid
 end
@@ -1201,7 +1273,13 @@ local function spawnLuckyBlockAtPosition(configName, position, originalSpawner, 
 	end)
 	
 	-- Parent to world (Game.LuckyBlocks folder)
-	luckyBlockModel.Parent = Workspace.Game:FindFirstChild("LuckyBlocks") or Workspace.Game
+	local worldFolder = getLuckyBlocksWorldFolder()
+	if not worldFolder then
+		luckyBlockModel:Destroy()
+		ActiveLuckyBlocks[uid] = nil
+		return nil
+	end
+	luckyBlockModel.Parent = worldFolder
 	
 	-- Tag as dropped lucky block for client animation (always animate - near player)
 	CollectionService:AddTag(luckyBlockModel, "DroppedBrainrot")
@@ -1572,15 +1650,64 @@ end
 	@param uid string
 	@return boolean - Success
 ]]
+function Module:CollectWorldLuckyBlock(player, uid)
+	local luckyBlockData = ActiveLuckyBlocks[uid]
+	if not luckyBlockData or luckyBlockData.Owner then
+		return false
+	end
+
+	local character = player.Character
+	if not character then
+		return false
+	end
+
+	if character:GetAttribute("IsDying") then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false
+	end
+
+	if player:GetAttribute("InRightSafeZone") then
+		local popupEvent = Events:FindFirstChild("Popup")
+		if popupEvent then
+			popupEvent:FireClient(player, "Lucky blocks are not allowed here!", false)
+		end
+		return false
+	end
+
+	local configName = luckyBlockData.ConfigName
+	local onZoneCollected = luckyBlockData.OnZoneCollected
+
+	if luckyBlockData.Model then
+		luckyBlockData.Model:Destroy()
+	end
+
+	ActiveLuckyBlocks[uid] = nil
+
+	local success, newUID = Server_Inventory:AddItem(player, "LuckyBlock", configName, {})
+	if not success then
+		return false
+	end
+
+	if type(newUID) == "string" and newUID ~= "" then
+		InventoryHandlerEvent:FireClient(player, "AutoEquip", newUID)
+	end
+	notifyLuckyBlockCollected(player, configName)
+
+	if onZoneCollected then
+		task.spawn(onZoneCollected)
+	end
+
+	return true
+end
+
 function Module:PickupLuckyBlock(player, uid)
 	local luckyBlockData = ActiveLuckyBlocks[uid]
 	if not luckyBlockData or luckyBlockData.Owner then
 		return false -- Already owned or doesn't exist
-	end
-	
-	-- Check if player is actively playing (not dead, not in safe zone)
-	if not player:GetAttribute("IsPlaying") then
-		return false -- Player is dead or in safe zone
 	end
 	
 	-- Check if player/character is alive and not dying
@@ -1617,10 +1744,22 @@ function Module:PickupLuckyBlock(player, uid)
 	
 	-- Check carry limit
 	local heldCount = 0
+	local holdsLuckyBlockAlready = false
 	if HeldItems[player] then
-		for _ in pairs(HeldItems[player]) do
+		for _, heldData in pairs(HeldItems[player]) do
 			heldCount = heldCount + 1
+			if heldData and heldData.ItemType == "LuckyBlock" then
+				holdsLuckyBlockAlready = true
+			end
 		end
+	end
+
+	if holdsLuckyBlockAlready then
+		local popupEvent = Events:FindFirstChild("Popup")
+		if popupEvent then
+			popupEvent:FireClient(player, "You are already holding a lucky block!", false)
+		end
+		return false
 	end
 	
 	local profile = Server_Data:GetProfile(player)
@@ -1675,15 +1814,65 @@ function Module:PickupLuckyBlock(player, uid)
 	
 	-- Sync to client for UI updates
 	syncHeldItemsToClient(player)
-	
-	-- Auto-collect if player is in SafeZone (fix: picking up while already in safe zone)
-	if not player:GetAttribute("IsPlaying") then
-		-- Player is in SafeZone, immediately collect to inventory
-		task.defer(function()
-			Module:CollectHeldItems(player)
-		end)
+
+	local onZoneCollected = luckyBlockData.OnZoneCollected
+	if onZoneCollected then
+		task.spawn(onZoneCollected)
 	end
-	
+
+	return true
+end
+
+function Module:CollectHeldLuckyBlocks(player)
+	if not HeldItems[player] then
+		return false
+	end
+
+	local luckyBlockUIDs = {}
+	for uid, heldData in pairs(HeldItems[player]) do
+		if heldData and heldData.ItemType == "LuckyBlock" then
+			table.insert(luckyBlockUIDs, uid)
+		end
+	end
+
+	if #luckyBlockUIDs == 0 then
+		return false
+	end
+
+	local didCollect = false
+	for _, uid in ipairs(luckyBlockUIDs) do
+		local heldData = HeldItems[player] and HeldItems[player][uid]
+		if heldData then
+			if heldData.CarriedModel then
+				heldData.CarriedModel:Destroy()
+			end
+
+			ActiveLuckyBlocks[uid] = nil
+
+			local success, newUID = Server_Inventory:AddItem(player, "LuckyBlock", heldData.ConfigName, {})
+			if success then
+				didCollect = true
+				HeldItems[player][uid] = nil
+				if type(newUID) == "string" and newUID ~= "" then
+					InventoryHandlerEvent:FireClient(player, "AutoEquip", newUID)
+				end
+				notifyLuckyBlockCollected(player, heldData.ConfigName)
+			end
+		end
+	end
+
+	if not didCollect then
+		return false
+	end
+
+	if next(HeldItems[player]) == nil then
+		HeldItems[player] = nil
+		player:SetAttribute("IsHoldingBrainrot", nil)
+	else
+		rebuildCarriedModels(player)
+	end
+
+	syncHeldItemsToClient(player)
 	return true
 end
 
@@ -2047,6 +2236,59 @@ local function setupPlayerDeathHandler(player)
 	end)
 end
 
+local function getLowestSpawnAreaY()
+	local tagged = CollectionService:GetTagged("LowestSpawnArea")
+	local lowest = nil
+	for _, inst in ipairs(tagged) do
+		if inst:IsA("BasePart") then
+			local y = inst.Position.Y
+			if not lowest or y < lowest then
+				lowest = y
+			end
+		end
+	end
+	return lowest
+end
+
+local function isHoldingAnyLuckyBlock(player)
+	local held = HeldItems[player]
+	if not held then
+		return false
+	end
+	for _, data in pairs(held) do
+		if data and data.ItemType == "LuckyBlock" then
+			return true
+		end
+	end
+	return false
+end
+
+local function startLowestSpawnAreaCollector()
+	task.spawn(function()
+		while true do
+			local lowestY = getLowestSpawnAreaY()
+			if lowestY then
+				local thresholdY = lowestY - 10
+				for _, player in ipairs(Players:GetPlayers()) do
+					if isHoldingAnyLuckyBlock(player) then
+						local character = player.Character
+						local root = character and character:FindFirstChild("HumanoidRootPart")
+						if root and root.Position.Y < thresholdY then
+							local now = tick()
+							local prev = LowestAreaCooldown[player] or 0
+							if (now - prev) >= 1 then
+								LowestAreaCooldown[player] = now
+								Module:CollectHeldLuckyBlocks(player)
+							end
+						end
+					end
+				end
+			end
+			task.wait(0.5)
+		end
+	end)
+end
+
 --[[
 	Initialize spawner system
 ]]
@@ -2067,6 +2309,7 @@ function Module:Init()
 			PlayerDeathConnections[player]:Disconnect()
 			PlayerDeathConnections[player] = nil
 		end
+		LowestAreaCooldown[player] = nil
 	end)
 	
 	-- Handle existing players
@@ -2076,6 +2319,7 @@ function Module:Init()
 	
 	-- Start timer cleanup for dropped/externally spawned held items.
 	self:StartDespawnLoop()
+	startLowestSpawnAreaCollector()
 	
 	-- Setup RemoteEvent handlers (action-based, minimal)
 	BrainrotHandlerEvent.OnServerEvent:Connect(function(player, action, ...)

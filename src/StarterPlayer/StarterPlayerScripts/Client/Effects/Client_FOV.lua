@@ -31,6 +31,12 @@ local FOVLocked = false       -- Highest priority: external effects
 local FrameZoomActive = false -- Middle priority: UI frames
 local RunDesiredFOV = BASE_FOV -- Lowest priority: running speed
 local BalloonFloatFOVBoost = 0 -- additive while floating / parachuting
+local SpeedBoostFovNarrow = 0 -- subtractive speed-tunnel FOV (boosters / propeller)
+local PrevSpeedBoostFovNarrow = 0
+local MIN_FOV = 48
+local FOV_NARROW_TWEEN_IN = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local FOV_NARROW_TWEEN_OUT = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local MAX_FOV = 100
 
 local FOVLockTimer = nil
 
@@ -46,8 +52,9 @@ local function updateFOV(customTweenInfo)
 	if FrameZoomActive then
 		targetFOV = FRAME_ZOOM_FOV
 	else
-		targetFOV = RunDesiredFOV + BalloonFloatFOVBoost
+		targetFOV = RunDesiredFOV + BalloonFloatFOVBoost - SpeedBoostFovNarrow
 	end
+	targetFOV = math.clamp(targetFOV, MIN_FOV, MAX_FOV)
 	
 	if math.abs(targetFOV - LastFOV) < 0.5 then return end
 	LastFOV = targetFOV
@@ -95,13 +102,41 @@ function Module:SetFrameZoomActive(active)
 	end
 end
 
+function Module:SetSpeedBoostNarrow(narrow: number)
+	SpeedBoostFovNarrow = math.max(0, narrow)
+	if FOVLocked then
+		return
+	end
+
+	local targetFOV = if FrameZoomActive
+		then FRAME_ZOOM_FOV
+		else math.clamp(RunDesiredFOV + BalloonFloatFOVBoost - SpeedBoostFovNarrow, MIN_FOV, MAX_FOV)
+	if math.abs(targetFOV - Camera.FieldOfView) < 0.05 then
+		LastFOV = targetFOV
+		return
+	end
+
+	LastFOV = targetFOV
+	if ActiveTween then
+		ActiveTween:Cancel()
+	end
+	local narrowing = narrow > PrevSpeedBoostFovNarrow
+	PrevSpeedBoostFovNarrow = narrow
+	ActiveTween = TweenService:Create(Camera, if narrowing then FOV_NARROW_TWEEN_IN else FOV_NARROW_TWEEN_OUT, {
+		FieldOfView = targetFOV,
+	})
+	ActiveTween:Play()
+end
+
 function Module:SetBalloonFloatBoost(boost: number)
 	BalloonFloatFOVBoost = math.max(0, boost)
 	if FOVLocked then
 		return
 	end
 
-	local targetFOV = if FrameZoomActive then FRAME_ZOOM_FOV else RunDesiredFOV + BalloonFloatFOVBoost
+	local targetFOV = if FrameZoomActive
+		then FRAME_ZOOM_FOV
+		else math.clamp(RunDesiredFOV + BalloonFloatFOVBoost - SpeedBoostFovNarrow, MIN_FOV, MAX_FOV)
 	if math.abs(targetFOV - Camera.FieldOfView) < 0.05 then
 		LastFOV = targetFOV
 		return
