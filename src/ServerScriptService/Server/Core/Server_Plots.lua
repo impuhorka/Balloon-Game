@@ -213,6 +213,11 @@ function Module:SetupPlayerHandlers()
 			replica:ListenToChange({"Passes", "CashBoost"}, function(newValue)
 				PlotService:UpdatePlotPlayerInfo(player)
 			end)
+
+			replica:ListenToChange({"EquippedIndexFloor"}, function(newValue)
+				PlotService:ApplyPlotSkin(player, newValue)
+				PlotService:UpdatePlotPlayerInfo(player)
+			end)
 			
 			-- Update plot title when rebirths change (affects cash multiplier)
 			replica:ListenToChange({"Rebirths"}, function(newValue)

@@ -33,6 +33,7 @@ Shared_Marketplace.Passes = {
 	Sniper = 0,
 	Tablet = 0,
 	QuickCollect = 0,
+	PremiumFloor = 0,
 }
 
 Shared_Marketplace.CashAmounts = {

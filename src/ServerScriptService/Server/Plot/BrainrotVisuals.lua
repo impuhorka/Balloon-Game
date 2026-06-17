@@ -8,6 +8,7 @@ local Shared_Brainrots = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Br
 local Shared_Rarity = require(ReplicatedStorage.Modules.Gameplay.Shared_Rarity)
 local Shared_Shorten = require(ReplicatedStorage.Modules.Utilities.Shared_Shorten)
 local Shared_RebirthRewards = require(ReplicatedStorage.Modules.Settings.Shared_RebirthRewards)
+local Shared_IndexRewards = require(ReplicatedStorage.Modules.Gameplay.Shared_IndexRewards)
 local Shared_ModifierHandler = require(ReplicatedStorage.Modules.Gameplay.Shared_ModifierHandler)
 
 local BrainrotVisuals = {}
@@ -410,6 +411,9 @@ function BrainrotVisuals:CreateBillboard(brainrotModel: Model, slotModel: Model,
 				if data and data.Passes and data.Passes.CashBoost == true then
 					totalMultiplier = totalMultiplier + 2
 				end
+
+				local equippedFloor = (data and data.EquippedIndexFloor) or "Default"
+				totalMultiplier = totalMultiplier + Shared_IndexRewards:GetCashMultiplier(equippedFloor)
 
 				-- Friend boost: percentage on top (e.g. 3 friends at 10% each = +0.3)
 				local friendBoostPercent = ownerPlayer:GetAttribute("FriendCashBoost") or 0

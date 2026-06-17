@@ -28,16 +28,9 @@ local glowTemplate = nil
 local sparkleTemplate = nil
 
 function Module:Init()
-	-- Load click effect templates from ModuleScript children
+	-- Templates are optional — click effects are skipped when absent.
 	glowTemplate = script:FindFirstChild("Glow")
 	sparkleTemplate = script:FindFirstChild("Sparkle")
-	
-	if not glowTemplate then
-		warn("⚠️ Glow template not found in Client_Click. Add it as a child in Studio (copy from SingingX)")
-	end
-	if not sparkleTemplate then
-		warn("⚠️ Sparkle template not found in Client_Click. Add it as a child in Studio (copy from SingingX)")
-	end
 	
 	-- Create dedicated fullscreen layer for click effects (IgnoreGuiInset = viewport coords)
 	clickEffectsGui = Instance.new("ScreenGui")

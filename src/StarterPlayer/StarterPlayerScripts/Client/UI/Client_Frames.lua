@@ -60,7 +60,7 @@ end
 
 local function resolveFrameAlias(uiType)
 	if uiType == "SpeedUpgrades" or uiType == "SpeedStore" or uiType == "Speed" then
-		return "Baloons"
+		return "Balloons"
 	end
 	return uiType
 end

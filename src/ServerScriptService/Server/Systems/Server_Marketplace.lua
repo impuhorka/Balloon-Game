@@ -587,6 +587,19 @@ function Module:GamepassPurchase(player: Player, data: any, passId: number, pass
 		if Events and Events:FindFirstChild("Popup") then
 			Events.Popup:FireClient(player, "Quick Collect activated!", true)
 		end
+	elseif passName == "PremiumFloor" then
+		local PlotService = require(script.Parent.Parent.Plot.PlotService)
+		Server_Data:SetValue(player, "EquippedIndexFloor", "Premium")
+		PlotService:ApplyPlotSkin(player, "Premium")
+		PlotService:UpdatePlotPlayerInfo(player)
+
+		local BrainrotVisuals = require(script.Parent.Parent.Plot.BrainrotVisuals)
+		BrainrotVisuals:UpdateAllBillboardsForPlayer(player)
+
+		local Events = ReplicatedStorage:FindFirstChild("Events")
+		if Events and Events:FindFirstChild("Popup") then
+			Events.Popup:FireClient(player, "Premium Plot unlocked!", true)
+		end
 	end
 end
 
@@ -1015,7 +1028,7 @@ local function setupShopPrompt(taggedInstance)
 				Module:HandleGroupJoinPrompt(player)
 			else
 				if uiType == "SpeedUpgrades" or uiType == "SpeedStore" then
-					uiType = "Baloons"
+					uiType = "Balloons"
 				end
 				-- Fire ProximityHandler event to client for other UITypes
 				local Events = ReplicatedStorage:FindFirstChild("Events")

@@ -4,9 +4,12 @@
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
 local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local Shared_RebirthRewards = require(ReplicatedStorage.Modules.Settings.Shared_RebirthRewards)
+local Shared_IndexRewards = require(ReplicatedStorage.Modules.Gameplay.Shared_IndexRewards)
+local Shared_PlotSkins = require(ReplicatedStorage.Modules.Gameplay.Shared_PlotSkins)
 
 local PlotService = {}
 
@@ -113,28 +116,122 @@ function PlotService:GetPlayerPlotData(player: Player): table?
 end
 
 --[[
-	Get base floor (Floor0) from a plot model
-	@param plotModel Model
-	@return Model? - Floor0 or nil
+	Floor parent on a plot: Map folder if present, otherwise the plot model itself
+	(supports Plot.Map.Floor0 and Plot.Floor0 layouts).
 ]]
-local function getBaseFloor(plotModel: Model): Model?
-	return plotModel 
-		and plotModel:FindFirstChild("Map") 
-		and plotModel.Map:FindFirstChild("Floor0")
+local function getPlotFloorContainer(plotModel: Model): Instance
+	local map = plotModel:FindFirstChild("Map")
+	if map then
+		return map
+	end
+	for _, child in plotModel:GetChildren() do
+		if string.lower(child.Name) == "map" then
+			return child
+		end
+	end
+	return plotModel
 end
 
--- Get Floor0 or AdditionalFloor template from Assets.PlotSkins; fallback to OtherModels for additional floors.
-local function getPlotSkinTemplates(skinKey: string): (Model?, Model?)
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	local plotSkins = assets and assets:FindFirstChild("PlotSkins")
-	if not plotSkins then return nil, nil end
-	local floor0 = plotSkins:FindFirstChild("Floor0_" .. skinKey)
-	local additional = plotSkins:FindFirstChild("AdditionalFloor_" .. skinKey)
-	return floor0, additional
+local function getBaseFloor(plotModel: Model): Instance?
+	return getPlotFloorContainer(plotModel):FindFirstChild("Floor0")
 end
 
-local function getAdditionalFloorTemplate(): Model?
-	local _, additional = getPlotSkinTemplates("Default")
+-- Resolve plot skin key for template lookup (Floor0_<key>, AdditionalFloor_<key> in Assets.PlotSkins).
+local function getSkinKey(player: Player, equippedFloorKey: string?): string
+	local equipped = equippedFloorKey
+	if equipped == nil then
+		if not player or not DataService then
+			return "Default"
+		end
+		equipped = DataService:GetValue(player, "EquippedIndexFloor")
+	end
+	local floorKey = (equipped == "Default" or not equipped) and "Default" or equipped
+	return Shared_IndexRewards:GetSkinKey(floorKey)
+end
+
+local function getSkinPivot(inst: Instance): CFrame
+	if inst:IsA("Model") then
+		return inst:GetPivot()
+	end
+	if inst:IsA("BasePart") then
+		return inst.CFrame
+	end
+	if inst:IsA("Folder") then
+		local sum = Vector3.zero
+		local count = 0
+		for _, d in inst:GetDescendants() do
+			if d:IsA("BasePart") then
+				sum += d.Position
+				count += 1
+			end
+		end
+		if count > 0 then
+			return CFrame.new(sum / count)
+		end
+	end
+	return CFrame.new()
+end
+
+local function pivotSkinTemplate(template: Instance, target: CFrame)
+	if template:IsA("Model") then
+		template:PivotTo(target)
+		return
+	end
+	if template:IsA("BasePart") then
+		template.CFrame = target
+		return
+	end
+	if not template:IsA("Folder") then
+		return
+	end
+	local parts: { BasePart } = {}
+	for _, d in template:GetDescendants() do
+		if d:IsA("BasePart") then
+			table.insert(parts, d)
+		end
+	end
+	if #parts == 0 then
+		return
+	end
+	local center = Vector3.zero
+	for _, part in parts do
+		center += part.Position
+	end
+	center /= #parts
+	local delta = target * CFrame.new(center):Inverse()
+	for _, part in parts do
+		part.CFrame = delta * part.CFrame
+	end
+end
+
+local function cloneSkinForMap(template: Instance, mapName: string): Instance
+	if template:IsA("Model") or template:IsA("Folder") then
+		local clone = template:Clone()
+		clone.Name = mapName
+		return clone
+	end
+
+	if template:IsA("BasePart") then
+		local wrapper = Instance.new("Model")
+		wrapper.Name = mapName
+		local part = template:Clone()
+		part.Parent = wrapper
+		wrapper.PrimaryPart = part
+		return wrapper
+	end
+
+	local clone = template:Clone()
+	clone.Name = mapName
+	return clone
+end
+
+local function getPlotSkinTemplates(skinKey: string): (Instance?, Instance?)
+	return Shared_PlotSkins:GetTemplates(skinKey)
+end
+
+local function getAdditionalFloorTemplateForOwner(owner): Model?
+	local skinKey = getSkinKey(owner)
+	local _, additional = getPlotSkinTemplates(skinKey)
 	if additional then return additional end
 	-- Fallback to default
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -142,42 +239,63 @@ local function getAdditionalFloorTemplate(): Model?
 end
 
 --[[
-	Apply the default plot skin (Floor0 + AdditionalFloor) to a plot.
+	Apply player's equipped plot skin (Floor0 + AdditionalFloor) to their plot.
+	Call on claim and when EquippedIndexFloor changes.
 ]]
-function PlotService:ApplyPlotSkin(player: Player)
+function PlotService:ApplyPlotSkin(player: Player, equippedFloorKey: string?): boolean
 	local plotData = self:GetPlayerPlotData(player)
-	if not plotData or not plotData.Model then return end
-	local plotModel = plotData.Model
-	local map = plotModel:FindFirstChild("Map")
-	if not map then return end
-
-	local floor0Template, additionalTemplate = getPlotSkinTemplates("Default")
-	-- If still no Floor0 template, skip (leave existing Floor0)
-	if floor0Template then
-		local oldFloor0 = map:FindFirstChild("Floor0")
-		if oldFloor0 then
-			local cf = oldFloor0:GetPivot()
-			oldFloor0:Destroy()
-			local newFloor0 = floor0Template:Clone()
-			newFloor0.Name = "Floor0"
-			newFloor0:PivotTo(cf)
-			newFloor0.Parent = map
-		end
+	if not plotData or not plotData.Model then
+		return false
 	end
-	-- Replace existing additional floors with skin's AdditionalFloor
+
+	local plotModel = plotData.Model
+	local floorParent = getPlotFloorContainer(plotModel)
+
+	local skinKey = getSkinKey(player, equippedFloorKey)
+	local floor0Template, additionalTemplate = getPlotSkinTemplates(skinKey)
+	if not floor0Template then
+		warn(
+			"[PlotService] Missing Floor0 template for skin key:",
+			skinKey,
+			"(expected Floor0_" .. skinKey .. ")\n",
+			Shared_PlotSkins:DescribeFolder()
+		)
+		return false
+	end
+
+	local oldFloor0 = getBaseFloor(plotModel)
+	if not oldFloor0 then
+		warn("[PlotService] ApplyPlotSkin: Floor0 missing on", plotModel:GetFullName())
+		return false
+	end
+
+	local targetCf = getSkinPivot(oldFloor0)
+	oldFloor0:Destroy()
+
+	local newFloor0 = cloneSkinForMap(floor0Template, "Floor0")
+	if newFloor0:IsA("Model") and not newFloor0.PrimaryPart then
+		newFloor0.PrimaryPart = newFloor0:FindFirstChildWhichIsA("BasePart", true)
+	end
+	pivotSkinTemplate(newFloor0, targetCf)
+	newFloor0.Parent = floorParent
+
 	if additionalTemplate then
 		for floorIndex, floor in pairs(plotData.FloorModels) do
 			if floor and floor.Parent then
-				local cf = floor:GetPivot()
+				local cf = getSkinPivot(floor)
 				floor:Destroy()
-				local newFloor = additionalTemplate:Clone()
-				newFloor.Name = "Floor" .. floorIndex
-				newFloor:PivotTo(cf)
-				newFloor.Parent = map
+				local newFloor = cloneSkinForMap(additionalTemplate, "Floor" .. floorIndex)
+				if newFloor:IsA("Model") and not newFloor.PrimaryPart then
+					newFloor.PrimaryPart = newFloor:FindFirstChildWhichIsA("BasePart", true)
+				end
+				pivotSkinTemplate(newFloor, cf)
+				newFloor.Parent = floorParent
 				plotData.FloorModels[floorIndex] = newFloor
 			end
 		end
 	end
+
+	return true
 end
 
 --[[
@@ -235,12 +353,12 @@ function PlotService:AddSlot(plotModel: Model, plotData: table, slotID: number, 
 	-- Create additional floors if needed (Floor1, Floor2, etc.)
 	if floorIndex >= 1 and not plotData.FloorModels[floorIndex] then
 		-- Check if floor already exists in plot
-		local existingFloor = plotModel.Map:FindFirstChild("Floor" .. floorIndex)
+		local existingFloor = getPlotFloorContainer(plotModel):FindFirstChild("Floor" .. floorIndex)
 		if existingFloor then
 			plotData.FloorModels[floorIndex] = existingFloor
 		else
 			-- Create new floor from owner's skin (PlotSkins.AdditionalFloor_<key>) or default OtherModels.AdditionalFloor
-			local floorTemplate = getAdditionalFloorTemplate()
+			local floorTemplate = getAdditionalFloorTemplateForOwner(plotData.Owner)
 			if not floorTemplate then
 				floorTemplate = ReplicatedStorage:FindFirstChild("Assets")
 					and ReplicatedStorage.Assets:FindFirstChild("OtherModels")
@@ -249,7 +367,7 @@ function PlotService:AddSlot(plotModel: Model, plotData: table, slotID: number, 
 			if floorTemplate then
 				local newFloor = floorTemplate:Clone()
 				newFloor.Name = "Floor" .. floorIndex
-				newFloor.Parent = plotModel.Map
+				newFloor.Parent = getPlotFloorContainer(plotModel)
 				
 				-- Get Floor0 as reference for all upper floors
 				local floor0 = getBaseFloor(plotModel)
@@ -386,22 +504,20 @@ function PlotService:UpdatePlotTitle(plotModel: Model, player: Player)
 		rebirthsLabel.Text = tostring(rebirths) .. " Rebirths"
 	end
 	
-	-- Calculate total cash multiplier (rebirth + gamepass)
+	-- Calculate total cash multiplier (rebirth + gamepass + plot skin)
 	local cashBonusLabel = playerInfo:FindFirstChild("CashBonus")
 	if cashBonusLabel and cashBonusLabel:IsA("TextLabel") then
-		-- Rebirth multiplier (but subtract 1 to show bonus only)
-		local rebirthMult = Shared_RebirthRewards:GetCashMultiplier(rebirths) - 1  -- Remove base 1x
-		
-		-- CashBoost gamepass: +2x
+		local rebirthMult = Shared_RebirthRewards:GetCashMultiplier(rebirths) - 1
+
 		local data = DataService and DataService:GetData(player)
 		local cashBoostBonus = (data and data.Passes and data.Passes.CashBoost) and 2 or 0
-		
-		-- Total multiplier = base 1x + all bonuses
-		local actualMult = 1 + rebirthMult + cashBoostBonus
-		
-		-- Display multiplier (subtract base 1x to show only bonus)
+
+		local equippedFloor = (data and data.EquippedIndexFloor) or "Default"
+		local plotSkinBonus = Shared_IndexRewards:GetCashMultiplier(equippedFloor)
+
+		local actualMult = 1 + rebirthMult + cashBoostBonus + plotSkinBonus
 		local displayMult = actualMult - 1
-		
+
 		cashBonusLabel.Text = "x" .. tostring(displayMult) .. " Cash"
 	end
 
@@ -483,7 +599,7 @@ function PlotService:ClaimPlot(player: Player): number?
 	-- Show owner on plot title (PlayerTitle.BillboardGui)
 	self:UpdatePlotTitle(plotModel, player)
 
-	-- Apply default plot skin (Floor0 + AdditionalFloor from PlotSkins)
+	-- Apply owner's equipped plot skin (Floor0 + AdditionalFloor from PlotSkins)
 	self:ApplyPlotSkin(player)
 
 	return plotID
@@ -548,16 +664,16 @@ function PlotService:ReleasePlot(player: Player)
 	if plotData.Model then
 		local floor0Template = select(1, getPlotSkinTemplates("Default"))
 		if floor0Template then
-			local map = plotData.Model:FindFirstChild("Map")
-			local oldFloor0 = map and map:FindFirstChild("Floor0")
+			local floorParent = getPlotFloorContainer(plotData.Model)
+			local oldFloor0 = getBaseFloor(plotData.Model)
+			local cf = CFrame.new()
 			if oldFloor0 then
-				local cf = oldFloor0:GetPivot()
+				cf = getSkinPivot(oldFloor0)
 				oldFloor0:Destroy()
-				local newFloor0 = floor0Template:Clone()
-				newFloor0.Name = "Floor0"
-				newFloor0:PivotTo(cf)
-				newFloor0.Parent = map
 			end
+			local newFloor0 = cloneSkinForMap(floor0Template, "Floor0")
+			pivotSkinTemplate(newFloor0, cf)
+			newFloor0.Parent = floorParent
 		end
 	end
 	

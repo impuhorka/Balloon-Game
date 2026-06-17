@@ -58,6 +58,8 @@ function Module:Init()
 		
 		-- Balloons system (buy/equip state and data sync)
 		["BalloonHandler"] = "RemoteEvent",
+		-- Index / plot skins (EquipFloor, UnequipFloor)
+		["IndexHandler"] = "RemoteEvent",
 		-- Balloon jump-hold float (client Hold true/false → server lift on HRP)
 		["BalloonFloatHandler"] = "RemoteEvent",
 		

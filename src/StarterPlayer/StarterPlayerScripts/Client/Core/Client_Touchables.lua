@@ -51,7 +51,7 @@ end
 local function resolveUIType(uiType)
 	-- Match Client_Store / legacy place attrs: "Speed" was the old speed shop frame name
 	if uiType == "SpeedUpgrades" or uiType == "SpeedStore" or uiType == "Speed" then
-		return "Baloons"
+		return "Balloons"
 	end
 	return uiType
 end

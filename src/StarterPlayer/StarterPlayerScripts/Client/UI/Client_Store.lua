@@ -1076,7 +1076,7 @@ function Module:OpenToSection(sectionName: string)
 	-- Redirect old SpeedStore entrypoint to new Balloons frame
 	if sectionName == "SpeedStore" or sectionName == "Speed" then
 		if self.Client_Frames then
-			self.Client_Frames:OpenFrame("Baloons")
+			self.Client_Frames:OpenFrame("Balloons")
 		end
 		return
 	end

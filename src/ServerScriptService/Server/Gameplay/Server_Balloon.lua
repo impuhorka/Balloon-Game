@@ -434,7 +434,7 @@ local function buyBalloon(player: Player, configName: string, balloonHandler: Re
 	local nextList = table.clone(owned)
 	table.insert(nextList, configName)
 	Server_Data:SetValue(player, "Balloons", nextList)
-	balloonHandler:FireClient(player, "OwnedUpdated")
+	balloonHandler:FireClient(player, "OwnedUpdated", configName)
 end
 
 local function appendNewEquippedFromOwned(player: Player, playerRig: any): boolean

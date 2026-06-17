@@ -1,13 +1,15 @@
 --// Client_Balloons - Balloon store frame setup and buy flow
---// Reads config names from Shared_Balloons and wires Buy buttons to BalloonHandler
+--// Clones Frames.Balloons.ListHolder.ScrollingList.Template per balloon config.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
 local Shared_Balloons = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Balloons)
+local Shared_Rarity = require(ReplicatedStorage.Modules.Gameplay.Shared_Rarity)
 local Shared_Shorten = require(ReplicatedStorage.Modules.Utilities.Shared_Shorten)
 local BalloonRigKit = require(ReplicatedStorage.Modules.Gameplay.BalloonRigKit)
 local Client_Data = require(script.Parent.Parent.Core.Client_Data)
@@ -18,19 +20,23 @@ local BalloonHandler = Events:WaitForChild("BalloonHandler")
 local Module = {}
 
 local BalloonsFrame
-local listHolder
+local scrollingList
+local rowTemplate
 local bannerTotalLabel
-local rowsByConfig = {}
-local selectedConfigName = nil
+local rowsByConfig: { [string]: GuiObject } = {}
 local replicaHooksBound = false
 
 local MAX_TOTAL = tonumber(Shared_Balloons.MaxTotalBalloons) or 15
+
+local UNCOMMON_GRADIENT = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(170, 255, 120)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 190, 90)),
+})
 
 local function getReplica()
 	return Client_Data:GetReplica()
 end
 
---- Per-configName count from replica Balloons array {ConfigName, ...}
 local function getCountsByType()
 	local replica = getReplica()
 	if not replica then
@@ -55,93 +61,262 @@ local function getCash()
 	return tonumber(replica.Data.Cash) or 0
 end
 
---- Speed shop rows often reused a Frame named "Buy" with an inner GuiButton; strip tags/attrs that route to PurchaseHandler / frame toggle.
-local function resolveBuyButton(row)
-	local buy = row:FindFirstChild("Buy", true)
-	if not buy then
-		return nil
+local function getBuyButton(row: Instance): GuiButton?
+	local buttons = row:FindFirstChild("Buttons", true)
+	local buy = buttons and buttons:FindFirstChild("Buy")
+	local buyButton = buy and buy:FindFirstChild("BuyButton")
+	if buyButton and buyButton:IsA("GuiButton") then
+		return buyButton
 	end
-	if buy:IsA("GuiButton") then
-		return buy
-	end
-	local inner = buy:FindFirstChildWhichIsA("GuiButton", true)
-	return inner
+	return row:FindFirstChildWhichIsA("GuiButton", true)
 end
 
-local function stripLegacyPurchaseHooks(button)
+local function getBuyTitle(row: Instance): TextLabel?
+	local buttons = row:FindFirstChild("Buttons", true)
+	local buy = buttons and buttons:FindFirstChild("Buy")
+	local buyButton = buy and buy:FindFirstChild("BuyButton")
+	local title = buyButton and buyButton:FindFirstChild("Title")
+	if title and title:IsA("TextLabel") then
+		return title
+	end
+	if buyButton then
+		return buyButton:FindFirstChildWhichIsA("TextLabel", true)
+	end
+	return nil
+end
+
+local function stripLegacyPurchaseHooks(button: GuiButton)
 	button:SetAttribute("UIType", nil)
 	button:SetAttribute("ProductID", nil)
 	button:SetAttribute("BalloonBuy", true)
 end
 
-local function updateBannerTotal(total)
-	if
-		bannerTotalLabel
-		and (bannerTotalLabel:IsA("TextLabel") or bannerTotalLabel:IsA("TextButton"))
-	then
-		bannerTotalLabel.Text = tostring(total) .. " / " .. tostring(MAX_TOTAL)
+local function applyRarityGradient(gradient: UIGradient?, rarity: string)
+	if not gradient then
+		return
+	end
+
+	local info = Shared_Rarity:GetRarityInfo(rarity)
+	if info and info.gradient then
+		gradient.Color = info.gradient
+		gradient.Rotation = if info.isRainbow then 0 else 90
+	elseif rarity == "Uncommon" then
+		gradient.Color = UNCOMMON_GRADIENT
+		gradient.Rotation = 90
 	end
 end
 
---- UI places SpeedBefore / SpeedAfter under row.Info (not always direct children of row).
-local function findRowSpeedField(row, fieldName)
-	local info = row:FindFirstChild("Info")
-	if not info then
-		for _, child in ipairs(row:GetChildren()) do
-			if child.Name:lower() == "info" then
-				info = child
-				break
+local function getRowIcon(row: Instance): GuiObject?
+	local icon = row:FindFirstChild("Icon", true)
+	if icon and icon:IsA("GuiObject") then
+		return icon
+	end
+	return nil
+end
+
+local activeIconPunch: { [GuiObject]: Tween } = {}
+
+local function playRowIconPunch(configName: string)
+	local row = rowsByConfig[configName]
+	if not row then
+		return
+	end
+
+	local icon = getRowIcon(row)
+	if not icon then
+		return
+	end
+
+	local uiScale = icon:FindFirstChild("UIScale")
+	if not uiScale then
+		uiScale = Instance.new("UIScale")
+		uiScale.Name = "UIScale"
+		uiScale.Scale = 1
+		uiScale.Parent = icon
+	end
+
+	local previous = activeIconPunch[icon]
+	if previous then
+		previous:Cancel()
+		activeIconPunch[icon] = nil
+	end
+
+	uiScale.Scale = 1
+
+	local shrink = TweenService:Create(
+		uiScale,
+		TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Scale = 0.9 }
+	)
+	local restore = TweenService:Create(
+		uiScale,
+		TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }
+	)
+
+	activeIconPunch[icon] = shrink
+	shrink:Play()
+	shrink.Completed:Once(function()
+		if activeIconPunch[icon] == shrink then
+			activeIconPunch[icon] = restore
+		end
+		if uiScale.Parent then
+			restore:Play()
+		end
+	end)
+	restore.Completed:Once(function()
+		if activeIconPunch[icon] == restore then
+			activeIconPunch[icon] = nil
+		end
+	end)
+end
+
+local function setRowIcon(row: Instance, configName: string)
+	local icon = getRowIcon(row)
+
+	local imageId = Shared_Balloons.Icons and Shared_Balloons.Icons[configName]
+	if not imageId or not icon then
+		return
+	end
+
+	if icon:IsA("ImageLabel") or icon:IsA("ImageButton") then
+		icon.Image = imageId
+	elseif icon:IsA("ViewportFrame") then
+		-- leave viewport-driven icons alone
+	end
+end
+
+local function applyTitleText(titleRoot: Instance, displayName: string)
+	if titleRoot:IsA("TextLabel") or titleRoot:IsA("TextButton") then
+		titleRoot.Text = displayName
+	end
+
+	for _, child in titleRoot:GetChildren() do
+		if child:IsA("TextLabel") or child:IsA("TextButton") then
+			child.Text = displayName
+		end
+	end
+end
+
+local function setRowTitle(row: Instance, displayName: string)
+	local title = row:FindFirstChild("Title")
+	if title then
+		applyTitleText(title, displayName)
+		return
+	end
+
+	for _, desc in row:GetDescendants() do
+		if desc.Name == "Title" then
+			local buttons = row:FindFirstChild("Buttons", true)
+			if not buttons or not desc:IsDescendantOf(buttons) then
+				applyTitleText(desc, displayName)
+				return
 			end
 		end
 	end
-	if info then
-		local inst = info:FindFirstChild(fieldName, true)
-		if inst then
-			return inst
+end
+
+local function setRowHealth(row: Instance, hp: number)
+	local health = row:FindFirstChild("Health", true)
+	local label = health and health:FindFirstChild("Text")
+	if label and label:IsA("TextLabel") then
+		label.Text = tostring(hp)
+		return
+	end
+
+	local fallback = row:FindFirstChild("HP", true)
+	if fallback and fallback:IsA("TextLabel") then
+		fallback.Text = tostring(hp) .. " HP"
+	end
+end
+
+local function getRarityLayoutOrder(rarity: string, shopIndex: number): number
+	if rarity == "Uncommon" then
+		return 15
+	end
+	local rarityOrder = Shared_Rarity.Order[rarity]
+	if rarityOrder then
+		return rarityOrder * 10
+	end
+	return shopIndex * 10
+end
+
+local function ensureListLayout(listContainer: Instance)
+	for _, layout in listContainer:GetChildren() do
+		if layout:IsA("UIListLayout") then
+			layout.SortOrder = Enum.SortOrder.LayoutOrder
 		end
 	end
-	return row:FindFirstChild(fieldName, true)
-end
-
---- field may be a TextLabel or a Frame containing one.
-local function writeNumberToGuiField(root, value)
-	if not root then
-		return
-	end
-	local text = tostring(value)
-	if root:IsA("TextLabel") or root:IsA("TextButton") or root:IsA("TextBox") then
-		root.Text = text
-		return
-	end
-	local inner = root:FindFirstChildWhichIsA("TextLabel", true)
-	if inner then
-		inner.Text = text
-		return
-	end
-	inner = root:FindFirstChildWhichIsA("TextButton", true)
-	if inner then
-		inner.Text = text
+	local nested = listContainer:FindFirstChildWhichIsA("UIListLayout", true)
+	if nested then
+		nested.SortOrder = Enum.SortOrder.LayoutOrder
 	end
 end
 
-local function updateBeforeAfterLabels()
-	local counts = getCountsByType()
-	for configName, row in pairs(rowsByConfig) do
-		local beforeField = findRowSpeedField(row, "SpeedBefore")
-		local afterField = findRowSpeedField(row, "SpeedAfter")
-		local n = counts[configName] or 0
-		writeNumberToGuiField(beforeField, n)
-		writeNumberToGuiField(afterField, n + 1)
+local function resolveRarityTextAndGradient(rarityRoot: Instance): (TextLabel?, UIGradient?)
+	if rarityRoot:IsA("TextLabel") or rarityRoot:IsA("TextButton") then
+		local label = rarityRoot :: TextLabel
+		return label, label:FindFirstChildOfClass("UIGradient")
 	end
+
+	local textChild = rarityRoot:FindFirstChild("Text")
+	if textChild and (textChild:IsA("TextLabel") or textChild:IsA("TextButton")) then
+		local label = textChild :: TextLabel
+		return label, label:FindFirstChildOfClass("UIGradient") or rarityRoot:FindFirstChildOfClass("UIGradient")
+	end
+
+	local label = rarityRoot:FindFirstChildWhichIsA("TextLabel", true)
+	if label then
+		return label, label:FindFirstChildOfClass("UIGradient") or rarityRoot:FindFirstChildOfClass("UIGradient")
+	end
+
+	return nil, rarityRoot:FindFirstChildOfClass("UIGradient")
 end
 
-local function updateSelectedVisuals()
-	for configName, row in pairs(rowsByConfig) do
-		local selectedFlag = row:FindFirstChild("Selected")
-		if selectedFlag and selectedFlag:IsA("GuiObject") then
-			selectedFlag.Visible = (configName == selectedConfigName)
+local function setRowRarity(row: Instance, rarity: string)
+	local rarityRoot = row:FindFirstChild("Rarity") or row:FindFirstChild("Rarity", true)
+	if not rarityRoot then
+		return
+	end
+
+	local label, gradient = resolveRarityTextAndGradient(rarityRoot)
+	if label then
+		label.Text = rarity
+	end
+
+	applyRarityGradient(gradient, rarity)
+end
+
+local function setRowBackgroundRarity(row: Instance, rarity: string)
+	local background = row:FindFirstChild("BackgroundFrame", true)
+	if not background then
+		return
+	end
+	applyRarityGradient(background:FindFirstChildOfClass("UIGradient"), rarity)
+end
+
+local function formatCost(cost: number): string
+	return "$" .. Shared_Shorten:Number(cost)
+end
+
+local function setBannerTotalText(text: string)
+	if not bannerTotalLabel then
+		return
+	end
+
+	if bannerTotalLabel:IsA("TextLabel") or bannerTotalLabel:IsA("TextButton") then
+		bannerTotalLabel.Text = text
+	end
+
+	for _, child in bannerTotalLabel:GetChildren() do
+		if child:IsA("TextLabel") or child:IsA("TextButton") then
+			child.Text = text
 		end
 	end
+end
+
+local function updateBannerTotal(total: number)
+	setBannerTotalText(string.format("%s/%s", total, MAX_TOTAL))
 end
 
 local function updateOwnershipVisuals()
@@ -150,99 +325,109 @@ local function updateOwnershipVisuals()
 	local atCap = totalOwned >= MAX_TOTAL
 
 	updateBannerTotal(totalOwned)
-	updateBeforeAfterLabels()
 
 	for configName, row in pairs(rowsByConfig) do
+		local config = Shared_Balloons.List[configName]
+		if not config then
+			continue
+		end
+
 		local count = counts[configName] or 0
-		local ownedFlag = row:FindFirstChild("Owned")
+		local ownedFlag = row:FindFirstChild("Owned", true)
 		if ownedFlag and ownedFlag:IsA("GuiObject") then
 			ownedFlag.Visible = count > 0
 		end
 
-		local buyButton = resolveBuyButton(row)
-		local buyLabel = buyButton and buyButton:FindFirstChild("Title", true)
-		if buyButton and buyButton:IsA("GuiButton") then
-			local config = Shared_Balloons.List[configName]
-			local cost = (config and config.Cost) or 0
+		local buyButton = getBuyButton(row)
+		local buyLabel = getBuyTitle(row)
+		if buyButton then
+			local cost = config.Cost or 0
 			local canAfford = cash >= cost
 			local canBuy = not atCap and canAfford
 
 			buyButton.Active = canBuy
 			buyButton.AutoButtonColor = canBuy
 
-			if buyLabel and buyLabel:IsA("TextLabel") then
+			if buyLabel then
 				if atCap then
-					buyLabel.Text = "Max balloons"
-				elseif not canAfford then
-					buyLabel.Text = "$" .. Shared_Shorten:Number(cost)
+					buyLabel.Text = "MAX"
 				else
-					buyLabel.Text = "$" .. Shared_Shorten:Number(cost)
+					buyLabel.Text = formatCost(cost)
 				end
 			end
 		end
 	end
 end
 
-local function bindRow(configName, row)
+local function bindRow(configName: string, row: GuiObject)
 	local config = Shared_Balloons.List[configName]
 	if not config then
 		return
 	end
 
-	local title = row:FindFirstChild("Title", true)
-	if title and title:IsA("TextLabel") then
-		title.Text = config.DisplayName or configName
-	end
+	setRowIcon(row, configName)
+	setRowTitle(row, config.DisplayName or configName)
+	setRowHealth(row, config.HP or 0)
+	setRowRarity(row, config.Rarity or "Common")
+	setRowBackgroundRarity(row, config.Rarity or "Common")
 
-	local hpLabel = row:FindFirstChild("HP", true)
-	if hpLabel and hpLabel:IsA("TextLabel") then
-		hpLabel.Text = tostring(config.HP or 0) .. " HP"
-	end
-
-	local buyButton = resolveBuyButton(row)
-	if buyButton and buyButton:IsA("GuiButton") then
+	local buyButton = getBuyButton(row)
+	if buyButton then
 		stripLegacyPurchaseHooks(buyButton)
 		buyButton.MouseButton1Click:Connect(function()
 			BalloonHandler:FireServer("Buy", configName)
 		end)
 	end
 
-	local selectButton = row:FindFirstChild("Select", true)
-	if selectButton and selectButton:IsA("GuiButton") then
-		selectButton.Activated:Connect(function()
-			selectedConfigName = configName
-			updateSelectedVisuals()
-		end)
+	local buyLabel = getBuyTitle(row)
+	if buyLabel then
+		buyLabel.Text = formatCost(config.Cost or 0)
 	end
 end
 
-local function bindExistingRows()
+local listContainer
+
+local function clearGeneratedRows()
+	if not listContainer or not rowTemplate then
+		return
+	end
+	for _, child in listContainer:GetChildren() do
+		if child ~= rowTemplate and child:IsA("GuiObject") and not child:IsA("UILayout") then
+			child:Destroy()
+		end
+	end
+end
+
+local function buildShopRows()
 	rowsByConfig = {}
-	selectedConfigName = nil
+	clearGeneratedRows()
 
-	bannerTotalLabel = BalloonsFrame and BalloonsFrame:FindFirstChild("TotalBaloons", true)
-	if not bannerTotalLabel then
-		local banner = BalloonsFrame and BalloonsFrame:FindFirstChild("Banner", true)
-		if banner then
-			bannerTotalLabel = banner:FindFirstChild("TotalBaloons", true)
-		end
+	if not listContainer or not rowTemplate then
+		return
 	end
 
-	for configName, config in pairs(Shared_Balloons.List) do
-		local row = listHolder:FindFirstChild(configName)
-		if row and row:IsA("GuiObject") then
-			row.Visible = true
-			rowsByConfig[configName] = row
-			bindRow(configName, row)
-			if not selectedConfigName then
-				selectedConfigName = configName
-			end
-		else
-			warn("⚠️ Client_Balloons: Row not found in ListHolder for", configName, "(", config.DisplayName or configName, ")")
+	ensureListLayout(listContainer)
+	rowTemplate.Visible = false
+	rowTemplate.LayoutOrder = 100000
+
+	local shopOrder = Shared_Balloons.ShopOrder
+	for index, configName in ipairs(shopOrder) do
+		local config = Shared_Balloons.List[configName]
+		if not config then
+			warn("⚠️ Client_Balloons: Missing config for", configName)
+			continue
 		end
+
+		local row = rowTemplate:Clone()
+		row.Name = configName
+		row.Visible = true
+		row.LayoutOrder = getRarityLayoutOrder(config.Rarity or "Common", index)
+		row.Parent = listContainer
+
+		rowsByConfig[configName] = row
+		bindRow(configName, row)
 	end
 
-	updateSelectedVisuals()
 	updateOwnershipVisuals()
 end
 
@@ -265,7 +450,6 @@ local function bindReplicaDataListeners()
 end
 
 local function waitForReplicaAndBind()
-	-- Store UI can init before PlayerData replica exists; first refresh otherwise shows 0 until a buy fires OwnedUpdated.
 	pcall(function()
 		Client_Data.WaitUntilReady()
 	end)
@@ -287,25 +471,44 @@ function Module:Init()
 	end
 
 	local frames = mainGui:FindFirstChild("Frames")
-	BalloonsFrame = frames and frames:FindFirstChild("Baloons")
+	BalloonsFrame = frames and frames:FindFirstChild("Balloons")
 	if not BalloonsFrame then
-		warn("⚠️ Client_Balloons: Frames.Baloons not found")
+		warn("⚠️ Client_Balloons: Frames.Balloons not found")
 		return
 	end
 
-	listHolder = BalloonsFrame:FindFirstChild("ListHolder", true) or BalloonsFrame
-	if not listHolder then
-		warn("⚠️ Client_Balloons: ListHolder not found")
+	local listHolder = BalloonsFrame:FindFirstChild("ListHolder", true)
+	scrollingList = listHolder and listHolder:FindFirstChild("ScrollingList")
+	if not scrollingList then
+		warn("⚠️ Client_Balloons: ListHolder.ScrollingList not found")
 		return
 	end
 
-	bindExistingRows()
+	rowTemplate = scrollingList:FindFirstChild("Template")
+	if not rowTemplate or not rowTemplate:IsA("GuiObject") then
+		warn("⚠️ Client_Balloons: ScrollingList.Template not found")
+		return
+	end
+
+	listContainer = rowTemplate.Parent
+	if not listContainer then
+		listContainer = scrollingList
+	end
+
+	local banner = BalloonsFrame:FindFirstChild("Banner", true)
+	local totalBalloons = banner and banner:FindFirstChild("TotalBalloons")
+	bannerTotalLabel = totalBalloons and totalBalloons:FindFirstChild("Title")
+
+	buildShopRows()
 
 	task.defer(waitForReplicaAndBind)
 
-	BalloonHandler.OnClientEvent:Connect(function(action)
+	BalloonHandler.OnClientEvent:Connect(function(action, configName)
 		if action == "OwnedUpdated" then
 			updateOwnershipVisuals()
+			if type(configName) == "string" and configName ~= "" then
+				playRowIconPunch(configName)
+			end
 		end
 	end)
 end

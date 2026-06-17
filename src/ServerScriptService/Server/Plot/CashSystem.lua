@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared_Brainrots = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Brainrots)
 local Shared_Marketplace = require(ReplicatedStorage.Modules.Settings.Shared_Marketplace)
 local Shared_RebirthRewards = require(ReplicatedStorage.Modules.Settings.Shared_RebirthRewards)
+local Shared_IndexRewards = require(ReplicatedStorage.Modules.Gameplay.Shared_IndexRewards)
 
 local CashSystem = {}
 
@@ -358,6 +359,9 @@ function CashSystem:StartCashGenerationLoop(plots: table)
 									totalMultiplier = totalMultiplier + 2
 								end
 
+								local equippedFloor = profile.Data.EquippedIndexFloor or "Default"
+								totalMultiplier = totalMultiplier + Shared_IndexRewards:GetCashMultiplier(equippedFloor)
+
 								local friendMult = PlayerFriendBoost[plotData.Owner] or 1
 								totalMultiplier = totalMultiplier + (friendMult - 1)
 
@@ -442,6 +446,9 @@ function CashSystem:CalculateOfflineEarnings(player: Player): number
 			if data.Passes and data.Passes.CashBoost == true then
 				totalMultiplier = totalMultiplier + 2
 			end
+
+			local equippedFloor = data.EquippedIndexFloor or "Default"
+			totalMultiplier = totalMultiplier + Shared_IndexRewards:GetCashMultiplier(equippedFloor)
 
 			-- Calculate offline earnings (reduced rate)
 			local offlineEarnings = cashPerSec * cappedOfflineTime * totalMultiplier * OFFLINE_CONFIG.OfflineRate

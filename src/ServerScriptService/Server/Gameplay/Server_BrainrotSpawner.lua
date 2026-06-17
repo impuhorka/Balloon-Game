@@ -2058,6 +2058,8 @@ function Module:CollectHeldItems(player)
 				table.insert(updatedIndex[modifier], configName)
 				-- Update the entire Index through SetValue (this will trigger replica changes)
 				Server_Data:SetValue(player, "Index", updatedIndex)
+				local Server_IndexRewards = require(script.Parent.Server_IndexRewards)
+				Server_IndexRewards:CheckAndGrant(player)
 			end
 			
 			-- Track for client notification (callout sound + popup)

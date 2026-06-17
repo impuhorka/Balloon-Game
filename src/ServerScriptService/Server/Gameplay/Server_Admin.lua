@@ -14,6 +14,7 @@ local Server_Marketplace = require(script.Parent.Parent.Systems.Server_Marketpla
 
 local Shared_LuckyBlocks = require(ReplicatedStorage.Modules.ItemConfigs.Shared_LuckyBlocks)
 local Shared_Marketplace = require(ReplicatedStorage.Modules.Settings.Shared_Marketplace)
+local Shared_IndexRewards = require(ReplicatedStorage.Modules.Gameplay.Shared_IndexRewards)
 
 local AdminCommands = {}
 
@@ -212,6 +213,14 @@ local COMMANDS = {
 		parameters = {
 			{ Name = "player", type = "player", required = true },
 			{ Name = "pass", type = "string", required = true }
+		}
+	},
+	["giveplotskins"] = {
+		description = "Unlock all plot skins for a player",
+		usage = "/giveplotskins [player]",
+		minRank = 223,
+		parameters = {
+			{ Name = "player", type = "player", required = true }
 		}
 	},
 	["startevent"] = {
@@ -1084,6 +1093,48 @@ function AdminCommands:HandleGiveGamepass(player, args)
 	return msg
 end
 
+function AdminCommands:HandleGivePlotSkins(player, args)
+	if #args < 1 then
+		self:SendSystemMessage(player, "Usage: /giveplotskins [player]", "Error")
+		return
+	end
+
+	local targetPlayer = self:FindPlayer(args[1])
+	if not targetPlayer then
+		self:SendSystemMessage(player, "Player not found: " .. args[1], "Error")
+		return
+	end
+
+	local data = Server_Data:GetData(targetPlayer)
+	if not data then
+		self:SendSystemMessage(player, "Player data not loaded for " .. targetPlayer.Name, "Error")
+		return
+	end
+
+	local unlocked = table.clone(data.IndexRewardsUnlocked or {})
+	local granted = {}
+
+	for skinKey, config in pairs(Shared_IndexRewards.Rewards) do
+		if Shared_IndexRewards:IsGamepassUnlock(config) then
+			local passName = config.PassName
+			if passName and Shared_Marketplace.Passes and Shared_Marketplace.Passes[passName] then
+				local passId = Shared_Marketplace.Passes[passName]
+				Server_Marketplace:GamepassPurchase(targetPlayer, data, passId, passName)
+				table.insert(granted, skinKey .. " (gamepass)")
+			end
+		else
+			unlocked[skinKey] = true
+			table.insert(granted, skinKey)
+		end
+	end
+
+	Server_Data:SetValue(targetPlayer, "IndexRewardsUnlocked", unlocked)
+
+	local msg = string.format("Unlocked %d plot skins for %s", #granted, targetPlayer.Name)
+	self:SendSystemMessage(player, msg, "Success")
+	return msg
+end
+
 --// EVENT COMMANDS
 function AdminCommands:HandleStartEvent(player, args)
 	if #args < 1 then
@@ -1242,6 +1293,8 @@ function AdminCommands:HandleCommand(player, message)
 		result = self:HandleGiveBlock(player, args)
 	elseif commandName == "givegamepass" then
 		result = self:HandleGiveGamepass(player, args)
+	elseif commandName == "giveplotskins" then
+		result = self:HandleGivePlotSkins(player, args)
 	elseif commandName == "startevent" then
 		result = self:HandleStartEvent(player, args)
 	elseif commandName == "endevent" then

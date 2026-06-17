@@ -40,6 +40,8 @@ local DataTemplate = {
 
 	-- Index (Collection tracker) - {[Modifier] = {ConfigName1, ConfigName2, ...}}
 	Index = {},
+	IndexRewardsUnlocked = {}, -- Plot skins unlocked via collection count {[SkinKey] = true}
+	EquippedIndexFloor = "Default", -- Equipped plot skin id from Shared_IndexRewards.Rewards
 	
 	-- Settings (player preferences)
 	Settings = {
