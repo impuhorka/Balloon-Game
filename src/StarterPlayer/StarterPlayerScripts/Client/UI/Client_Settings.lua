@@ -69,6 +69,24 @@ local function updateSetting(settingName: string, settingValue: any)
 end
 
 --[[
+	Update ScrollBar percent label(s). Title may be a TextLabel or a container with a nested Title label.
+]]
+local function setScrollBarPercentText(titleContainer: Instance?, percentText: string)
+	if not titleContainer then
+		return
+	end
+
+	if titleContainer:IsA("TextLabel") or titleContainer:IsA("TextButton") then
+		titleContainer.Text = percentText
+	end
+
+	local nestedTitle = titleContainer:FindFirstChild("Title")
+	if nestedTitle and (nestedTitle:IsA("TextLabel") or nestedTitle:IsA("TextButton")) then
+		nestedTitle.Text = percentText
+	end
+end
+
+--[[
 	Setup slider UI (Music, Sounds, PlayerSpeedSetting)
 	@param settingFrame Frame
 	@param settingName string
@@ -116,9 +134,7 @@ local function setupSlider(settingFrame: Frame, settingName: string)
 	filler.Size = UDim2.fromScale(initialValue, 0.5)
 	
 	-- Update title text
-	if title then
-		title.Text = math.round(initialValue * 100) .. "%"
-	end
+	setScrollBarPercentText(title, math.round(initialValue * 100) .. "%")
 	
 	-- Drag functionality
 	local function updateSlider(input)
@@ -130,9 +146,7 @@ local function setupSlider(settingFrame: Frame, settingName: string)
 		filler.Size = UDim2.fromScale(percent, 0.5)
 		
 		-- Update title text
-		if title then
-			title.Text = math.round(percent * 100) .. "%"
-		end
+		setScrollBarPercentText(title, math.round(percent * 100) .. "%")
 		
 		-- Update setting
 		updateSetting(settingName, percent)

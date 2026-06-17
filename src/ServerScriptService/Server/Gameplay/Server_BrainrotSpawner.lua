@@ -58,16 +58,10 @@ local ReservedSlots = {} -- [spawnerPart][originalUID] = true (brainrots picked 
 local LastSpawnedPerZone = {} -- [zoneID] = configName (last spawned brainrot in that zone, prevents consecutive duplicates)
 local LowestAreaCooldown = {} -- [player] = timestamp
 
-local function notifyLuckyBlockCollected(player, configName)
-	local config = Shared_LuckyBlocks.List[configName]
-	local displayName = (config and config.DisplayName) or "Lucky block"
-	local popupEvent = Events:FindFirstChild("Popup")
-	if popupEvent then
-		popupEvent:FireClient(player, ("%s added to your inventory."):format(displayName), {
-			popupType = "luckyblock_inventory_added",
-			sound = Shared_Sounds.SFX and Shared_Sounds.SFX.Achievement,
-			category = "reward",
-		})
+local function notifyLuckyBlockCollected(player, _configName)
+	local soundEvent = Events:FindFirstChild("Sound")
+	if soundEvent then
+		soundEvent:FireClient(player, "Achievement")
 	end
 	if PlayEffectEvent and PlayEffectEvent:IsA("RemoteEvent") then
 		PlayEffectEvent:FireClient(player, {
@@ -2037,31 +2031,9 @@ function Module:CollectHeldItems(player)
 		if heldData.ItemType ~= "LuckyBlock" then
 			local modifier = heldData.Modifier or "Normal"
 			local configName = heldData.ConfigName
-			local currentIndex = profile.Data.Index or {}
-			
-			-- Create a copy to avoid modifying profile data directly
-			local updatedIndex = {}
-			for rarity, brainrots in pairs(currentIndex) do
-				updatedIndex[rarity] = {}
-				for _, name in pairs(brainrots) do
-					table.insert(updatedIndex[rarity], name)
-				end
-			end
-			
-			-- Initialize modifier array if it doesn't exist
-			if not updatedIndex[modifier] then
-				updatedIndex[modifier] = {}
-			end
-			
-			-- Add the brainrot if not already discovered
-			if not table.find(updatedIndex[modifier], configName) then
-				table.insert(updatedIndex[modifier], configName)
-				-- Update the entire Index through SetValue (this will trigger replica changes)
-				Server_Data:SetValue(player, "Index", updatedIndex)
-				local Server_IndexRewards = require(script.Parent.Server_IndexRewards)
-				Server_IndexRewards:CheckAndGrant(player)
-			end
-			
+			local Server_IndexRewards = require(script.Parent.Server_IndexRewards)
+			Server_IndexRewards:RegisterDiscovery(player, configName, modifier)
+
 			-- Track for client notification (callout sound + popup)
 			table.insert(collectedBrainrots, {
 				ConfigName = configName,

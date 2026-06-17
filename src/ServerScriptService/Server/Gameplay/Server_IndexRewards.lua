@@ -125,6 +125,46 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 --[[
+	Register a brainrot as discovered in the player's Index for a modifier tab.
+	Returns true if this was a new discovery.
+]]
+function Module:RegisterDiscovery(player, configName: string, modifier: string?): boolean
+	if type(configName) ~= "string" or configName == "" then
+		return false
+	end
+	modifier = modifier or "Normal"
+
+	local profile = Server_Data:GetProfile(player)
+	if not profile or not profile.Data then
+		return false
+	end
+
+	local currentIndex = profile.Data.Index or {}
+	local updatedIndex = {}
+	for modKey, brainrots in pairs(currentIndex) do
+		updatedIndex[modKey] = {}
+		if type(brainrots) == "table" then
+			for _, name in pairs(brainrots) do
+				table.insert(updatedIndex[modKey], name)
+			end
+		end
+	end
+
+	if not updatedIndex[modifier] then
+		updatedIndex[modifier] = {}
+	end
+
+	if table.find(updatedIndex[modifier], configName) then
+		return false
+	end
+
+	table.insert(updatedIndex[modifier], configName)
+	Server_Data:SetValue(player, "Index", updatedIndex)
+	self:CheckAndGrant(player)
+	return true
+end
+
+--[[
 	Call after updating player's Index (e.g. in Server_BrainrotSpawner collect,
 	Server_ItemHandler FinishOpening). Checks each modifier; if discovered count
 	>= RequiredCount and not yet unlocked, sets IndexRewardsUnlocked[modifier] = true

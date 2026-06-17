@@ -7,6 +7,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
 
 --// Module Setup
 local Module = {}
@@ -74,6 +75,39 @@ local function getPassName(passId: number): string?
 		end
 	end
 	return nil
+end
+
+local function addRobuxSpent(player: Player, amount: number)
+	if typeof(amount) ~= "number" or amount <= 0 then
+		return
+	end
+
+	local Server_Data = require(script.Parent.Parent.Core.Server_Data)
+	local currentRobuxSpent = Server_Data:GetValue(player, "RobuxSpent") or 0
+	Server_Data:SetValue(player, "RobuxSpent", currentRobuxSpent + amount)
+end
+
+-- Receipts include CurrencySpent in live games; Studio mock purchases report 0 and
+-- GetProductInfo often times out, so skip the HTTP lookup there.
+local function trackRobuxSpentFromPurchase(player: Player, productId: number, infoType: Enum.InfoType, currencySpent: number?)
+	if typeof(currencySpent) == "number" and currencySpent > 0 then
+		addRobuxSpent(player, currencySpent)
+		return
+	end
+
+	if RunService:IsStudio() then
+		return
+	end
+
+	task.spawn(function()
+		local success, productInfo = pcall(function()
+			return MarketplaceService:GetProductInfo(productId, infoType)
+		end)
+
+		if success and productInfo and productInfo.PriceInRobux then
+			addRobuxSpent(player, productInfo.PriceInRobux)
+		end
+	end)
 end
 
 --// Product Handlers
@@ -773,18 +807,7 @@ function Module:SetupProcessReceipt()
 		-- Log successful purchase
 		logMarketplace(profile, purchaseId, "Granted", productId, nil)
 		
-		-- Track Robux spent for leaderboard (async to avoid blocking receipt processing)
-		task.spawn(function()
-			local success, productInfo = pcall(function()
-				return MarketplaceService:GetProductInfo(productId, Enum.InfoType.Product)
-			end)
-			
-			if success and productInfo and productInfo.PriceInRobux then
-				local Server_Data = require(script.Parent.Parent.Core.Server_Data)
-				local currentRobuxSpent = Server_Data:GetValue(player, "RobuxSpent") or 0
-				Server_Data:SetValue(player, "RobuxSpent", currentRobuxSpent + productInfo.PriceInRobux)
-			end
-		end)
+		trackRobuxSpentFromPurchase(player, productId, Enum.InfoType.Product, receiptInfo.CurrencySpent)
 		
 		-- Clear purchase context
 		if self.PurchaseContexts[player.UserId] then
@@ -1237,18 +1260,7 @@ function Module:Init()
 			if not data.Passes[passName] then
 				self:GamepassPurchase(player, data, passId, passName)
 				
-				-- Track Robux spent for leaderboard (async to avoid blocking)
-				task.spawn(function()
-					local passSuccess, passInfo = pcall(function()
-						return MarketplaceService:GetProductInfo(passId, Enum.InfoType.GamePass)
-					end)
-					
-					if passSuccess and passInfo and passInfo.PriceInRobux then
-						local Server_Data = require(script.Parent.Parent.Core.Server_Data)
-						local currentRobuxSpent = Server_Data:GetValue(player, "RobuxSpent") or 0
-						Server_Data:SetValue(player, "RobuxSpent", currentRobuxSpent + passInfo.PriceInRobux)
-					end
-				end)
+				trackRobuxSpentFromPurchase(player, passId, Enum.InfoType.GamePass, nil)
 				
 			end
 		else

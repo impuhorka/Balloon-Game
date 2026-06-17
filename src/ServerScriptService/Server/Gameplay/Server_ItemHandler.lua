@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared_Brainrots = require(ReplicatedStorage.Modules.ItemConfigs.Shared_Brainrots)
 local Shared_LuckyBlocks = require(ReplicatedStorage.Modules.ItemConfigs.Shared_LuckyBlocks)
 local Server_Inventory = require(script.Parent.Parent.Core.Server_Inventory)
+local Server_IndexRewards = require(script.Parent.Server_IndexRewards)
 
 local Module = {}
 
@@ -298,6 +299,7 @@ local function handleFinishOpening(player: Player, openId: string)
 		Modifier = pending.pickedModifier or "Normal",
 		Level = pending.level or 1,
 	})
+	Server_IndexRewards:RegisterDiscovery(player, pending.pickedConfig, pending.pickedModifier or "Normal")
 end
 
 function Module:Init()

@@ -345,7 +345,8 @@ local function updateOwnershipVisuals()
 			local canAfford = cash >= cost
 			local canBuy = not atCap and canAfford
 
-			buyButton.Active = canBuy
+			-- Keep clickable so MAX / broke states still get buy feedback (icon punch).
+			buyButton.Active = true
 			buyButton.AutoButtonColor = canBuy
 
 			if buyLabel then
@@ -375,7 +376,14 @@ local function bindRow(configName: string, row: GuiObject)
 	if buyButton then
 		stripLegacyPurchaseHooks(buyButton)
 		buyButton.MouseButton1Click:Connect(function()
-			BalloonHandler:FireServer("Buy", configName)
+			playRowIconPunch(configName)
+
+			local _, totalOwned = getCountsByType()
+			local atCap = totalOwned >= MAX_TOTAL
+			local canAfford = getCash() >= (config.Cost or 0)
+			if not atCap and canAfford then
+				BalloonHandler:FireServer("Buy", configName)
+			end
 		end)
 	end
 
@@ -503,12 +511,9 @@ function Module:Init()
 
 	task.defer(waitForReplicaAndBind)
 
-	BalloonHandler.OnClientEvent:Connect(function(action, configName)
+	BalloonHandler.OnClientEvent:Connect(function(action)
 		if action == "OwnedUpdated" then
 			updateOwnershipVisuals()
-			if type(configName) == "string" and configName ~= "" then
-				playRowIconPunch(configName)
-			end
 		end
 	end)
 end
